@@ -2,6 +2,7 @@ package eu.kanade.tachiyomi.extension.fr.scanmanga
 
 import android.content.SharedPreferences
 import android.util.Base64
+import androidx.preference.EditTextPreference
 import androidx.preference.ListPreference
 import androidx.preference.PreferenceScreen
 import eu.kanade.tachiyomi.network.GET
@@ -40,16 +41,102 @@ class ScanManga : HttpSource(), ConfigurableSource {
         Injekt.get<android.app.Application>().getSharedPreferences("source_$id", 0x0000)
     }
 
-    override fun headersBuilder(): Headers.Builder = super.headersBuilder()
-        .add("Accept-Language", "fr-FR,fr;q=0.9,en-US;q=0.8,en;q=0.7")
+    // User-Agents rotatifs pour éviter la détection
+    private val rotatingUserAgents = listOf(
+        "Mozilla/5.0 (Linux; Android 11; SM-G991B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.120 Mobile Safari/537.36",
+        "Mozilla/5.0 (Linux; Android 12; Pixel 6) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/96.0.4664.45 Mobile Safari/537.36",
+        "Mozilla/5.0 (Linux; Android 10; SM-A505F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/89.0.4389.105 Mobile Safari/537.36",
+        "Mozilla/5.0 (Linux; Android 11; OnePlus 9) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/93.0.4577.62 Mobile Safari/537.36",
+        "Mozilla/5.0 (Linux; Android 12; SM-S908B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/98.0.4758.101 Mobile Safari/537.36",
+        "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Mobile Safari/537.36",
+    )
+
+    private fun getUserAgentMode(): String =
+        preferences.getString("pref_useragent_mode", "default") ?: "default"
+
+    private fun getCustomUserAgent(): String =
+        preferences.getString("pref_custom_useragent", "") ?: ""
+
+    private fun getRotatingUserAgent(): String {
+        // Change de User-Agent toutes les heures
+        val hourOfDay = (System.currentTimeMillis() / (1000 * 60 * 60)) % rotatingUserAgents.size
+        return rotatingUserAgents[hourOfDay.toInt()]
+    }
+
+    private fun getCurrentUserAgent(): String {
+        return when (getUserAgentMode()) {
+            "custom" -> {
+                val custom = getCustomUserAgent()
+                if (custom.isNotBlank()) {
+                    custom
+                } else {
+                    super.headersBuilder().build()["User-Agent"]
+                        ?: ""
+                }
+            }
+
+            "rotating" -> getRotatingUserAgent()
+            else -> super.headersBuilder().build()["User-Agent"] ?: ""
+        }
+    }
+
+    override fun headersBuilder(): Headers.Builder {
+        val builder =
+            super.headersBuilder().add("Accept-Language", "fr-FR,fr;q=0.9,en-US;q=0.8,en;q=0.7")
+
+        // Ajouter le User-Agent selon les paramètres
+        when (getUserAgentMode()) {
+            "custom" -> {
+                val custom = getCustomUserAgent()
+                if (custom.isNotBlank()) {
+                    builder.set("User-Agent", custom)
+                }
+            }
+
+            "rotating" -> {
+                builder.set("User-Agent", getRotatingUserAgent())
+            }
+            // "default" : ne rien faire, utiliser celui de Mihon
+        }
+
+        return builder
+    }
 
     // Configuration des préférences
     override fun setupPreferenceScreen(screen: PreferenceScreen) {
+        // User-Agent
+        val userAgentModePref = ListPreference(screen.context).apply {
+            key = "pref_useragent_mode"
+            title = "Mode User-Agent"
+            summary = "Choisir comment gérer le User-Agent"
+            entries = arrayOf(
+                "Par défaut (Mihon)",
+                "Personnalisé",
+                "Rotatif automatique",
+            )
+            entryValues = arrayOf("default", "custom", "rotating")
+            setDefaultValue("default")
+        }
+        screen.addPreference(userAgentModePref)
+
+        val customUserAgentPref = EditTextPreference(screen.context).apply {
+            key = "pref_custom_useragent"
+            title = "User-Agent personnalisé"
+            summary = "Utilisé seulement si mode 'Personnalisé' est sélectionné"
+            dialogTitle = "User-Agent personnalisé"
+            dialogMessage =
+                "Exemple : Mozilla/5.0 (Linux; Android 11; SM-G991B) AppleWebKit/537.36..."
+            setDefaultValue("")
+        }
+        screen.addPreference(customUserAgentPref)
+
+        // Cache
         val cacheModePref = ListPreference(screen.context).apply {
             key = "pref_cache_mode"
             title = "Mode de cache des covers"
             summary = "Cache hybride recommandé pour de meilleures performances"
-            entries = arrayOf("Cache hybride (recommandé)", "Mémoire uniquement", "Persistant uniquement")
+            entries =
+                arrayOf("Cache hybride (recommandé)", "Mémoire uniquement", "Persistant uniquement")
             entryValues = arrayOf("hybrid", "memory", "persistent")
             setDefaultValue("hybrid")
         }
@@ -76,9 +163,14 @@ class ScanManga : HttpSource(), ConfigurableSource {
         screen.addPreference(batchSizePref)
     }
 
-    private fun getCacheMode(): String = preferences.getString("pref_cache_mode", "hybrid") ?: "hybrid"
-    private fun getBatchSize(): Int = preferences.getString("pref_batch_size", "15")?.toIntOrNull() ?: 15
-    private fun getLoadingMode(): String = preferences.getString("pref_loading_mode", "fast") ?: "fast"
+    private fun getCacheMode(): String =
+        preferences.getString("pref_cache_mode", "hybrid") ?: "hybrid"
+
+    private fun getBatchSize(): Int =
+        preferences.getString("pref_batch_size", "15")?.toIntOrNull() ?: 15
+
+    private fun getLoadingMode(): String =
+        preferences.getString("pref_loading_mode", "fast") ?: "fast"
 
     // Cache mémoire - utilisation de ConcurrentHashMap pour thread safety
     companion object {
@@ -271,6 +363,7 @@ class ScanManga : HttpSource(), ConfigurableSource {
                             }
                         }
                 }
+
                 "memory" -> {
                     memoryCache[manga.url]?.let { cached ->
                         if (now - cached.second < MEMORY_CACHE_DURATION) {
@@ -281,6 +374,7 @@ class ScanManga : HttpSource(), ConfigurableSource {
                         }
                     }
                 }
+
                 "persistent" -> {
                     persistentCache[manga.url]?.let { cached ->
                         if (now - cached.second < persistentCacheDuration) {
@@ -291,6 +385,7 @@ class ScanManga : HttpSource(), ConfigurableSource {
                         }
                     }
                 }
+
                 else -> null
             }
 
@@ -310,6 +405,7 @@ class ScanManga : HttpSource(), ConfigurableSource {
                         loadMissingCoversInBackground(mangasNeedingCovers)
                     }.start()
                 }
+
                 "complete" -> {
                     // Mode complet : attendre le chargement de toutes les covers
                     loadMissingCoversInBackground(mangasNeedingCovers)
@@ -338,7 +434,11 @@ class ScanManga : HttpSource(), ConfigurableSource {
             threads.forEach { it.start() }
             // Attendre la fin du batch
             threads.forEach {
-                try { it.join() } catch (e: InterruptedException) { return }
+                try {
+                    it.join()
+                } catch (e: InterruptedException) {
+                    return
+                }
             }
 
             // Délai entre batches pour éviter la surcharge serveur
@@ -397,15 +497,11 @@ class ScanManga : HttpSource(), ConfigurableSource {
 
     // Search
     override fun searchMangaRequest(page: Int, query: String, filters: FilterList): Request {
-        val url = "$baseUrl/api/search/quick.json"
-            .toHttpUrl().newBuilder()
-            .addQueryParameter("term", query)
-            .build()
-            .toString()
+        val url = "$baseUrl/api/search/quick.json".toHttpUrl().newBuilder()
+            .addQueryParameter("term", query).build().toString()
 
-        val newHeaders = headers.newBuilder()
-            .add("Content-type", "application/json; charset=UTF-8")
-            .build()
+        val newHeaders =
+            headers.newBuilder().add("Content-type", "application/json; charset=UTF-8").build()
 
         return GET(url, newHeaders)
     }
@@ -458,7 +554,8 @@ class ScanManga : HttpSource(), ConfigurableSource {
             val extraTitle = titleEl?.text()
 
             SChapter.create().apply {
-                name = if (!extraTitle.isNullOrEmpty()) "$chapterName - $extraTitle" else chapterName
+                name =
+                    if (!extraTitle.isNullOrEmpty()) "$chapterName - $extraTitle" else chapterName
                 setUrlWithoutDomain(linkEl.absUrl("href"))
             }
         }
@@ -466,7 +563,8 @@ class ScanManga : HttpSource(), ConfigurableSource {
 
     // Pages
     private fun decodeHunter(obfuscatedJs: String): String {
-        val regex = Regex("""eval\(function\(h,u,n,t,e,r\)\{.*?\}\("([^"]+)",\d+,"([^"]+)",(\d+),(\d+),\d+\)\)""")
+        val regex =
+            Regex("""eval\(function\(h,u,n,t,e,r\)\{.*?\}\("([^"]+)",\d+,"([^"]+)",(\d+),(\d+),\d+\)\)""")
         val (encoded, mask, intervalStr, optionStr) = regex.find(obfuscatedJs)?.destructured
             ?: error("Failed to match obfuscation pattern: $obfuscatedJs")
 
@@ -531,19 +629,19 @@ class ScanManga : HttpSource(), ConfigurableSource {
 
         val pageListRequest = POST(
             "$baseUrl/api/lel/$chapterId.json",
-            headers.newBuilder()
-                .add("Origin", "${documentUrl.scheme}://${documentUrl.host}")
-                .add("Referer", documentUrl.toString())
-                .add("Token", "yf")
-                .build(),
+            headers.newBuilder().add("Origin", "${documentUrl.scheme}://${documentUrl.host}")
+                .add("Referer", documentUrl.toString()).add("Token", "yf").build(),
             requestBody.toRequestBody(mediaType),
         )
 
-        val lelResponse = client.newBuilder().cookieJar(CookieJar.NO_COOKIES).build()
-            .newCall(pageListRequest).execute().use { response ->
-                if (!response.isSuccessful) { error("Unexpected error while fetching lel.") }
-                dataAPI(response.body.string(), chapterId.toInt())
-            }
+        val lelResponse =
+            client.newBuilder().cookieJar(CookieJar.NO_COOKIES).build().newCall(pageListRequest)
+                .execute().use { response ->
+                    if (!response.isSuccessful) {
+                        error("Unexpected error while fetching lel.")
+                    }
+                    dataAPI(response.body.string(), chapterId.toInt())
+                }
 
         return lelResponse.generateImageUrls().map { Page(it.first, imageUrl = it.second) }
     }
@@ -551,9 +649,7 @@ class ScanManga : HttpSource(), ConfigurableSource {
     override fun imageUrlParse(response: Response): String = throw UnsupportedOperationException()
 
     override fun imageRequest(page: Page): Request {
-        val imgHeaders = headers.newBuilder()
-            .add("Origin", baseUrl)
-            .build()
+        val imgHeaders = headers.newBuilder().add("Origin", baseUrl).build()
 
         return GET(page.imageUrl!!, imgHeaders)
     }
