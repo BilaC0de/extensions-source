@@ -1,5 +1,13 @@
 package eu.kanade.tachiyomi.extension.fr.crunchyscan
 
+import android.annotation.SuppressLint
+import android.app.Application
+import android.os.Handler
+import android.os.Looper
+import android.webkit.CookieManager
+import android.webkit.JavascriptInterface
+import android.webkit.WebView
+import android.webkit.WebViewClient
 import eu.kanade.tachiyomi.network.GET
 import eu.kanade.tachiyomi.network.POST
 import eu.kanade.tachiyomi.source.model.FilterList
@@ -11,13 +19,17 @@ import eu.kanade.tachiyomi.source.online.HttpSource
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.JsonArray
 import okhttp3.FormBody
 import okhttp3.Headers
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.Request
 import okhttp3.Response
 import org.jsoup.Jsoup
+import uy.kohesive.injekt.Injekt
+import uy.kohesive.injekt.api.get
 import uy.kohesive.injekt.injectLazy
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 
 class Crunchyscan : HttpSource() {
 
@@ -29,11 +41,15 @@ class Crunchyscan : HttpSource() {
     override val client = network.cloudflareClient
 
     private val json: Json by injectLazy()
-
-    // Variable pour stocker le token CSRF
     private var csrfToken: String = ""
 
-    // Fonction pour récupérer le token CSRF
+    private val application: Application = Injekt.get()
+    private val cookieManager = CookieManager.getInstance()
+
+    // ============================================
+    // CSRF TOKEN & COOKIES
+    // ============================================
+
     private fun fetchCsrfToken(): String {
         if (csrfToken.isNotEmpty()) {
             return csrfToken
@@ -41,9 +57,11 @@ class Crunchyscan : HttpSource() {
 
         val response = client.newCall(GET(baseUrl, headers)).execute()
         val html = response.body.string()
+
+        syncCookiesToWebView(baseUrl)
+
         response.close()
 
-        // Extraire le token depuis la balise meta
         val document = Jsoup.parse(html)
         val metaTag = document.selectFirst("meta[name=csrf-token]")
         csrfToken = metaTag?.attr("content") ?: ""
@@ -51,11 +69,26 @@ class Crunchyscan : HttpSource() {
         return csrfToken
     }
 
-    // Créer les headers avec le token CSRF
     private fun headersWithCsrf(): Headers {
         val token = fetchCsrfToken()
-        return headers.newBuilder().add("X-CSRF-TOKEN", token)
-            .add("X-Requested-With", "XMLHttpRequest").build()
+        return headers.newBuilder()
+            .add("X-CSRF-TOKEN", token)
+            .add("X-Requested-With", "XMLHttpRequest")
+            .build()
+    }
+
+    private fun syncCookiesToWebView(url: String) {
+        cookieManager.setAcceptCookie(true)
+
+        val httpUrl = url.toHttpUrlOrNull() ?: return
+        val cookies = client.cookieJar.loadForRequest(httpUrl)
+
+        cookies.forEach { cookie ->
+            val cookieString = "${cookie.name}=${cookie.value}; domain=${cookie.domain}; path=${cookie.path}"
+            cookieManager.setCookie(url, cookieString)
+        }
+
+        cookieManager.flush()
     }
 
     // ============================================
@@ -63,10 +96,18 @@ class Crunchyscan : HttpSource() {
     // ============================================
 
     override fun popularMangaRequest(page: Int): Request {
-        val formBody = FormBody.Builder().add("affichage", "grid").add("team", "").add("artist", "")
-            .add("author", "").add("page", page.toString()).add("chapters[]", "0")
-            .add("chapters[]", "200").add("searchTerm", "").add("orderWith", "Vues")
-            .add("orderBy", "desc").build()
+        val formBody = FormBody.Builder()
+            .add("affichage", "grid")
+            .add("team", "")
+            .add("artist", "")
+            .add("author", "")
+            .add("page", page.toString())
+            .add("chapters[]", "0")
+            .add("chapters[]", "200")
+            .add("searchTerm", "")
+            .add("orderWith", "Vues")
+            .add("orderBy", "desc")
+            .build()
 
         return POST("$baseUrl/api/manga/search/advance", headersWithCsrf(), formBody)
     }
@@ -93,10 +134,18 @@ class Crunchyscan : HttpSource() {
     // ============================================
 
     override fun latestUpdatesRequest(page: Int): Request {
-        val formBody = FormBody.Builder().add("affichage", "grid").add("team", "").add("artist", "")
-            .add("author", "").add("page", page.toString()).add("chapters[]", "0")
-            .add("chapters[]", "200").add("searchTerm", "").add("orderWith", "Récent")
-            .add("orderBy", "desc").build()
+        val formBody = FormBody.Builder()
+            .add("affichage", "grid")
+            .add("team", "")
+            .add("artist", "")
+            .add("author", "")
+            .add("page", page.toString())
+            .add("chapters[]", "0")
+            .add("chapters[]", "200")
+            .add("searchTerm", "")
+            .add("orderWith", "Récent")
+            .add("orderBy", "desc")
+            .build()
 
         return POST("$baseUrl/api/manga/search/advance", headersWithCsrf(), formBody)
     }
@@ -110,10 +159,18 @@ class Crunchyscan : HttpSource() {
     // ============================================
 
     override fun searchMangaRequest(page: Int, query: String, filters: FilterList): Request {
-        val formBody = FormBody.Builder().add("affichage", "grid").add("team", "").add("artist", "")
-            .add("author", "").add("page", page.toString()).add("chapters[]", "0")
-            .add("chapters[]", "200").add("searchTerm", query).add("orderWith", "Vues")
-            .add("orderBy", "desc").build()
+        val formBody = FormBody.Builder()
+            .add("affichage", "grid")
+            .add("team", "")
+            .add("artist", "")
+            .add("author", "")
+            .add("page", page.toString())
+            .add("chapters[]", "0")
+            .add("chapters[]", "200")
+            .add("searchTerm", query)
+            .add("orderWith", "Vues")
+            .add("orderBy", "desc")
+            .build()
 
         return POST("$baseUrl/api/manga/search/advance", headersWithCsrf(), formBody)
     }
@@ -131,7 +188,7 @@ class Crunchyscan : HttpSource() {
     }
 
     override fun mangaDetailsParse(response: Response): SManga {
-        val document = Jsoup.parse(response.body?.string() ?: "")
+        val document = Jsoup.parse(response.body.string())
 
         return SManga.create().apply {
             title = document.selectFirst("h2.text-3xl, h1.text-2xl")?.text() ?: ""
@@ -177,9 +234,7 @@ class Crunchyscan : HttpSource() {
                 url = link?.attr("href") ?: ""
                 name = link?.text()?.trim() ?: "Chapitre"
 
-                // Chercher le div qui contient l'icône timer, puis prendre le <p> suivant
-                val dateElement =
-                    element.select("i.fa-timer").first()?.parent()?.nextElementSibling()
+                val dateElement = element.select("i.fa-timer").first()?.parent()?.nextElementSibling()
                 val dateText = dateElement?.text()
                 date_upload = parseChapterDate(dateText)
             }
@@ -198,27 +253,22 @@ class Crunchyscan : HttpSource() {
                     val minutes = normalized.filter { it.isDigit() }.toLongOrNull() ?: 0
                     now - (minutes * 60 * 1000)
                 }
-
                 normalized.contains("heure") || normalized.contains("h") -> {
                     val hours = normalized.filter { it.isDigit() }.toLongOrNull() ?: 0
                     now - (hours * 60 * 60 * 1000)
                 }
-
                 normalized.contains("jour") -> {
                     val days = normalized.filter { it.isDigit() }.toLongOrNull() ?: 0
                     now - (days * DAY_IN_MILLIS)
                 }
-
                 normalized.contains("mois") -> {
                     val months = normalized.filter { it.isDigit() }.toLongOrNull() ?: 0
                     now - (months * MONTH_IN_MILLIS)
                 }
-
                 normalized.contains("année") || normalized.contains("an") -> {
                     val years = normalized.filter { it.isDigit() }.toLongOrNull() ?: 0
                     now - (years * YEAR_IN_MILLIS)
                 }
-
                 else -> 0L
             }
         } catch (e: Exception) {
@@ -227,97 +277,178 @@ class Crunchyscan : HttpSource() {
     }
 
     // ============================================
-    // PAGE LIST
+    // PAGE LIST avec WebView
     // ============================================
 
     override fun pageListRequest(chapter: SChapter): Request {
-        return GET(baseUrl + chapter.url, headers)
+        // Vérifier si l'URL est déjà complète ou relative
+        val url = if (chapter.url.startsWith("http")) {
+            chapter.url
+        } else {
+            baseUrl + chapter.url
+        }
+        return GET(url, headers)
     }
 
+    @SuppressLint("SetJavaScriptEnabled")
     override fun pageListParse(response: Response): List<Page> {
-        val html = response.body?.string() ?: return emptyList()
-        val document = Jsoup.parse(html)
+        val chapterUrl = response.request.url.toString()
 
-        // Chercher la variable JavaScript 'allImg' qui contient toutes les URLs
-        document.select("script:not([src])").forEach { script ->
-            val scriptContent = script.html() ?: return@forEach
+        // Log pour debug
+        println("CrunchyScan - Chapter URL: $chapterUrl")
 
-            // Pattern pour : var allImg = [...] ou allImg = [...]
-            val allimgPattern = Regex("""(?:var|let|const)?\s*allImg\s*=\s*(\[[\s\S]*?\]);""")
-            val match = allimgPattern.find(scriptContent)
+        syncCookiesToWebView(baseUrl)
 
-            if (match != null && match.groupValues.size > 1) {
-                val jsonArrayString = match.groupValues[1]
-                val imageUrls = parseImageArray(jsonArrayString)
+        val latch = CountDownLatch(1)
+        var imageUrls = emptyList<String>()
 
-                if (imageUrls.isNotEmpty()) {
-                    return imageUrls.mapIndexed { index, url ->
-                        val fullUrl = if (url.startsWith("http")) {
-                            url
-                        } else {
-                            baseUrl + url
+        Handler(Looper.getMainLooper()).post {
+            val webView = WebView(application)
+
+            try {
+                webView.settings.apply {
+                    javaScriptEnabled = true
+                    domStorageEnabled = true
+                    databaseEnabled = true
+                    useWideViewPort = false
+                    loadWithOverviewMode = false
+                    userAgentString = "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36"
+                    // Activer le debug JavaScript pour voir les console.log
+                    mixedContentMode = android.webkit.WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
+                }
+
+                cookieManager.setAcceptCookie(true)
+                cookieManager.setAcceptThirdPartyCookies(webView, true)
+
+                webView.addJavascriptInterface(
+                    object : Any() {
+                        @JavascriptInterface
+                        fun passImages(jsonString: String) {
+                            try {
+                                println("CrunchyScan - Received JSON: $jsonString")
+                                val urls = json.decodeFromString<List<String>>(jsonString)
+                                println("CrunchyScan - Parsed ${urls.size} URLs")
+                                imageUrls = urls.filter { url ->
+                                    url.isNotBlank() &&
+                                        !url.contains("get-image") &&
+                                        (url.startsWith("http") || url.startsWith("blob:") || url.startsWith("data:") || url.startsWith("/"))
+                                }
+                                println("CrunchyScan - Filtered to ${imageUrls.size} URLs")
+                            } catch (e: Exception) {
+                                println("CrunchyScan - Error parsing images: ${e.message}")
+                                e.printStackTrace()
+                            } finally {
+                                latch.countDown()
+                            }
                         }
-                        Page(index, imageUrl = fullUrl)
+                    },
+                    "Android",
+                )
+
+                webView.webViewClient = object : WebViewClient() {
+                    override fun onPageFinished(view: WebView?, url: String?) {
+                        webView.evaluateJavascript(
+                            """
+                            (async function() {
+                                try {
+                                    let retries = 0;
+                                    while (typeof allImg === 'undefined' && retries < 50) {
+                                        await new Promise(r => setTimeout(r, 100));
+                                        retries++;
+                                    }
+
+                                    if (typeof allImg === 'undefined') {
+                                        Android.passImages('[]');
+                                        return;
+                                    }
+
+                                    const processedUrls = await Promise.all(
+                                        allImg.map(async (url) => {
+                                            if (url.startsWith('blob:')) {
+                                                try {
+                                                    const response = await fetch(url);
+                                                    const blob = await response.blob();
+                                                    return new Promise((resolve) => {
+                                                        const reader = new FileReader();
+                                                        reader.onloadend = () => resolve(reader.result);
+                                                        reader.readAsDataURL(blob);
+                                                    });
+                                                } catch (e) {
+                                                    return url;
+                                                }
+                                            }
+                                            return url;
+                                        })
+                                    );
+
+                                    Android.passImages(JSON.stringify(processedUrls));
+                                } catch (e) {
+                                    Android.passImages('[]');
+                                }
+                            })();
+                            """.trimIndent(),
+                            null,
+                        )
+                    }
+
+                    override fun onReceivedError(view: WebView?, errorCode: Int, description: String?, failingUrl: String?) {
+                        super.onReceivedError(view, errorCode, description, failingUrl)
+                        latch.countDown()
                     }
                 }
+
+                webView.loadUrl(chapterUrl)
+            } catch (e: Exception) {
+                e.printStackTrace()
+                latch.countDown()
             }
         }
 
-        // Si aucune image trouvée, retourner une liste vide
-        return emptyList()
-    }
+        val success = latch.await(30, TimeUnit.SECONDS)
 
-    // Fonction pour parser le tableau JSON des URLs d'images
-    private fun parseImageArray(jsonArrayString: String): List<String> {
-        val urls = mutableListOf<String>()
-
-        try {
-            // Parser avec kotlinx.serialization
-            val jsonArray = json.parseToJsonElement(jsonArrayString)
-            if (jsonArray is JsonArray) {
-                jsonArray.forEach { element ->
-                    val url = element.toString().trim('"')
-                    if (url.isNotEmpty() && !url.equals("null", ignoreCase = true)) {
-                        urls.add(url)
-                    }
-                }
-                return urls
-            }
-        } catch (e: Exception) {
-            // Parsing manuel en cas d'échec
-            val urlPattern = Regex("""["']([^"']+)["']""")
-            urlPattern.findAll(jsonArrayString).forEach { match ->
-                val url = match.groupValues[1]
-                if (url.startsWith("http") || url.startsWith("/upload")) {
-                    urls.add(url)
-                }
-            }
+        if (!success || imageUrls.isEmpty()) {
+            throw Exception("Timeout ou aucune image trouvée")
         }
 
-        return urls
+        return imageUrls.mapIndexed { index, url ->
+            val finalUrl = when {
+                url.startsWith("http") -> url
+                url.startsWith("data:image") -> url
+                url.startsWith("/") -> baseUrl + url
+                else -> url
+            }
+            Page(index, imageUrl = finalUrl)
+        }
     }
 
     override fun imageUrlParse(response: Response): String {
         throw UnsupportedOperationException("Not used")
     }
 
-    // Override imageRequest pour gérer les URLs signées et ajouter les headers
-    // Override imageRequest pour gérer les URLs signées et ajouter les headers
     override fun imageRequest(page: Page): Request {
-        var imageUrl = page.imageUrl ?: "" // Correction: gérer le cas null
+        val imageUrl = page.imageUrl ?: ""
 
-        // Corriger &amp; en & dans les URLs
-        if (imageUrl.contains("&amp;")) {
-            imageUrl = imageUrl.replace("&amp;", "&")
+        if (imageUrl.startsWith("data:image")) {
+            return GET(imageUrl, headers)
         }
 
-        // Headers appropriés pour les requêtes d'images
+        val cleanUrl = imageUrl.replace("&amp;", "&")
+        val cookieString = cookieManager.getCookie(baseUrl) ?: ""
+
         val requestHeaders = headers.newBuilder()
             .add("Referer", "$baseUrl/")
             .add("Accept", "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8")
+            .apply {
+                if (cookieString.isNotEmpty()) {
+                    add("Cookie", cookieString)
+                }
+                if (csrfToken.isNotEmpty()) {
+                    add("X-CSRF-TOKEN", csrfToken)
+                }
+            }
             .build()
 
-        return GET(imageUrl, requestHeaders)
+        return GET(cleanUrl, requestHeaders)
     }
 
     // ============================================

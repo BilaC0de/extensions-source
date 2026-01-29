@@ -48,21 +48,30 @@ class RimuScans : HttpSource() {
     override fun latestUpdatesRequest(page: Int): Request =
         GET("$baseUrl/api/manga?page=$page&limit=24&sortBy=latest", headers)
 
-    override fun searchMangaRequest(page: Int, query: String, filters: FilterList): Request =
-        popularMangaRequest(page)
+    override fun searchMangaRequest(
+        page: Int,
+        query: String,
+        filters: FilterList,
+    ): Request = popularMangaRequest(page)
 
     override fun popularMangaParse(response: Response): MangasPage {
-        val result = json.decodeFromString<MangaListResponse>(response.body.string())
+        val result =
+            json.decodeFromString<MangaListResponse>(
+                response.body.string(),
+            )
+
         val mangas = result.mangas.map { it.toSManga() }
         return MangasPage(mangas, mangas.size >= 24)
     }
 
-    override fun latestUpdatesParse(response: Response): MangasPage = popularMangaParse(response)
+    override fun latestUpdatesParse(response: Response): MangasPage =
+        popularMangaParse(response)
 
-    override fun searchMangaParse(response: Response): MangasPage = popularMangaParse(response)
+    override fun searchMangaParse(response: Response): MangasPage =
+        popularMangaParse(response)
 
     /* =========================
-         Manga details
+       Manga details
        ========================= */
 
     override fun mangaDetailsRequest(manga: SManga): Request =
@@ -72,19 +81,24 @@ class RimuScans : HttpSource() {
         val document = org.jsoup.Jsoup.parse(response.body.string())
 
         return SManga.create().apply {
-            title = document.title()
-                .replace(" - Rimu Scans", "")
-                .replace(" - RimuScans", "")
-                .trim()
+            title =
+                document.title()
+                    .replace(" - Rimu Scans", "")
+                    .replace(" - RimuScans", "")
+                    .trim()
 
-            description = document.selectFirst("meta[name=description]")?.attr("content") ?: ""
+            description =
+                document
+                    .selectFirst("meta[name=description]")
+                    ?.attr("content")
+                    ?: ""
 
             initialized = true
         }
     }
 
     /* =========================
-           Chapter list
+       Chapter list
        ========================= */
 
     override fun chapterListRequest(manga: SManga): Request =
@@ -94,21 +108,28 @@ class RimuScans : HttpSource() {
         val slug = response.request.url.pathSegments.last()
 
         return try {
-            // Utiliser la bonne URL de l'API avec les paramètres query
-            val apiResponse = client.newCall(
-                GET("$baseUrl/api/manga?slug=$slug", headers),
-            ).execute()
+            val apiResponse =
+                client.newCall(
+                    GET("$baseUrl/api/manga?slug=$slug", headers),
+                ).execute()
 
             if (apiResponse.code == 200) {
-                val result = json.decodeFromString<MangaDetailResponse>(apiResponse.body.string())
+                val result =
+                    json.decodeFromString<MangaDetailResponse>(
+                        apiResponse.body.string(),
+                    )
 
                 result.manga.chapters
-                    .filter { it.status == "PUBLISHED" && it.type == "NORMAL" }
+                    .filter {
+                        it.status == "PUBLISHED" &&
+                            it.type == "NORMAL"
+                    }
                     .map { chapter ->
                         SChapter.create().apply {
                             name = chapter.title
                             chapter_number = chapter.number.toFloat()
-                            url = "/api/manga?slug=$slug&chapter=${chapter.number}"
+                            url =
+                                "/api/manga?slug=$slug&chapter=${chapter.number}"
                             date_upload = 0L
                         }
                     }
@@ -116,13 +137,13 @@ class RimuScans : HttpSource() {
             } else {
                 emptyList()
             }
-        } catch (e: Exception) {
+        } catch (_: Exception) {
             emptyList()
         }
     }
 
     /* =========================
-            Page list
+       Page list
        ========================= */
 
     override fun pageListRequest(chapter: SChapter): Request =
@@ -130,32 +151,42 @@ class RimuScans : HttpSource() {
 
     override fun pageListParse(response: Response): List<Page> {
         return try {
-            val result = json.decodeFromString<MangaDetailResponse>(response.body.string())
+            val result =
+                json.decodeFromString<MangaDetailResponse>(
+                    response.body.string(),
+                )
 
-            // Extraire le numéro du chapitre depuis l'URL
             val url = response.request.url
-            val chapterNumber = url.queryParameter("chapter")?.toIntOrNull()
+            val chapterNumber =
+                url.queryParameter("chapter")?.toIntOrNull()
+                    ?: return emptyList()
 
-            if (chapterNumber == null) return emptyList()
-
-            // Trouver le chapitre correspondant
-            val chapter = result.manga.chapters.find { it.number == chapterNumber }
+            val chapter =
+                result.manga.chapters.find {
+                    it.number == chapterNumber
+                }
 
             chapter?.images
                 ?.sortedBy { it.order }
                 ?.map { image ->
-                    Page(image.order - 1, "", "$baseUrl${image.url}")
-                } ?: emptyList()
-        } catch (e: Exception) {
+                    Page(
+                        image.order - 1,
+                        "",
+                        "$baseUrl${image.url}",
+                    )
+                }
+                ?: emptyList()
+        } catch (_: Exception) {
             emptyList()
         }
     }
 
-    override fun imageUrlParse(response: Response): String = throw UnsupportedOperationException()
+    override fun imageUrlParse(response: Response): String =
+        throw UnsupportedOperationException()
 }
 
 /* =========================
-           DTOs
+   DTOs
    ========================= */
 
 @Serializable
@@ -179,11 +210,13 @@ data class MangaDto(
         description = this@MangaDto.description
         thumbnail_url = "https://rimuscans.com$cover"
         genre = genres.joinToString(", ")
-        status = when (this@MangaDto.status.lowercase()) {
-            "ongoing" -> SManga.ONGOING
-            "completed" -> SManga.COMPLETED
-            else -> SManga.UNKNOWN
-        }
+
+        status =
+            when (this@MangaDto.status.lowercase()) {
+                "ongoing" -> SManga.ONGOING
+                "completed" -> SManga.COMPLETED
+                else -> SManga.UNKNOWN
+            }
     }
 }
 

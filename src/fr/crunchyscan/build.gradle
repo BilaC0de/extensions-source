@@ -1,5 +1,5 @@
 ext {
-    extName = 'Crunchy-Scan'
+    extName = 'CrunchyScan'
     extClass = '.Crunchyscan'
     extVersionCode = 1
     isNsfw = true
