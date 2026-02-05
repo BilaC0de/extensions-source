@@ -53,10 +53,15 @@ class Japscan : ConfigurableSource, ParsedHttpSource() {
 
     override val name = "Japscan"
 
-    // Sometimes an adblock blocker will pop up, preventing the user from opening
-    // a cloudflare protected page
-    private val internalBaseUrl = "https://www.japscan.vip"
-    override val baseUrl = "$internalBaseUrl/mangas/?sort=popular&p=1"
+    // URL par défaut
+    private val defaultBaseUrl = "https://www.japscan.foo"
+
+    // URL interne qui peut être modifiée via les préférences
+    private val internalBaseUrl: String
+        get() = preferences.getString(BASE_URL_PREF, defaultBaseUrl) ?: defaultBaseUrl
+
+    override val baseUrl: String
+        get() = "$internalBaseUrl/mangas/?sort=popular&p=1"
 
     override val lang = "fr"
 
@@ -74,6 +79,10 @@ class Japscan : ConfigurableSource, ParsedHttpSource() {
         val dateFormat by lazy {
             SimpleDateFormat("dd MMM yyyy", Locale.US)
         }
+        private const val BASE_URL_PREF = "BASE_URL"
+        private const val BASE_URL_PREF_TITLE = "URL du site Japscan"
+        private const val BASE_URL_PREF_SUMMARY = "URL de base pour accéder au site (par défaut: https://www.japscan.vip)"
+
         private const val SHOW_SPOILER_CHAPTERS_Title = "Les chapitres en Anglais ou non traduit sont upload en tant que \" Spoilers \" sur Japscan"
         private const val SHOW_SPOILER_CHAPTERS = "JAPSCAN_SPOILER_CHAPTERS"
         private val prefsEntries = arrayOf("Montrer uniquement les chapitres traduit en Français", "Montrer les chapitres spoiler")
@@ -394,6 +403,33 @@ class Japscan : ConfigurableSource, ParsedHttpSource() {
 
     // Prefs
     override fun setupPreferenceScreen(screen: androidx.preference.PreferenceScreen) {
+        // Préférence pour l'URL de base
+        val baseUrlPref = androidx.preference.EditTextPreference(screen.context).apply {
+            key = BASE_URL_PREF
+            title = BASE_URL_PREF_TITLE
+            summary = BASE_URL_PREF_SUMMARY
+            dialogTitle = BASE_URL_PREF_TITLE
+            dialogMessage = "Entrez l'URL complète du site (exemple: https://www.japscan.vip)"
+
+            setDefaultValue(defaultBaseUrl)
+
+            setOnPreferenceChangeListener { _, newValue ->
+                try {
+                    val newUrl = (newValue as String).trim().removeSuffix("/")
+                    // Validation basique de l'URL
+                    if (newUrl.startsWith("http://") || newUrl.startsWith("https://")) {
+                        preferences.edit().putString(BASE_URL_PREF, newUrl).commit()
+                    } else {
+                        false
+                    }
+                } catch (e: Exception) {
+                    false
+                }
+            }
+        }
+        screen.addPreference(baseUrlPref)
+
+        // Préférence pour les chapitres spoiler (existante)
         val chapterListPref = androidx.preference.ListPreference(screen.context).apply {
             key = SHOW_SPOILER_CHAPTERS_Title
             title = SHOW_SPOILER_CHAPTERS_Title
