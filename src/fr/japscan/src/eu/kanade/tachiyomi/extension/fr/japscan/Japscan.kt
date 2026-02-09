@@ -46,23 +46,23 @@ import java.util.Locale
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
-class Japscan : ConfigurableSource, ParsedHttpSource() {
+class Japscan : ParsedHttpSource(), ConfigurableSource {
 
     override val id: Long = 11
 
     override val name = "Japscan"
 
-    override val baseUrl get() = "$currentBaseUrl/mangas/?sort=popular&p=1"
+    private val preferences: SharedPreferences by getPreferencesLazy()
+
+    private val internalBaseUrl get() = preferences.getString(BASE_URL_PREF, DEFAULT_BASE_URL)!!
+
+    override val baseUrl get() = "$internalBaseUrl/mangas/?sort=popular&p=1"
 
     override val lang = "fr"
 
     override val supportsLatest = true
 
     private val json: Json by injectLazy()
-
-    private val preferences: SharedPreferences by getPreferencesLazy()
-
-    private val currentBaseUrl get() = preferences.getString(BASE_URL_PREF, DEFAULT_BASE_URL)!!
 
     override val client: OkHttpClient = network.cloudflareClient.newBuilder()
         .rateLimit(1, 2)
@@ -79,22 +79,24 @@ class Japscan : ConfigurableSource, ParsedHttpSource() {
         private const val BASE_URL_PREF_SUMMARY =
             "Entrez l'URL complète (ex: https://www.japscan.foo)"
 
-        private const val SHOW_SPOILER_CHAPTERS_TITLE = "Afficher les chapitres spoiler/RAW"
-        private const val SHOW_SPOILER_CHAPTERS_PREF = "JAPSCAN_SPOILER_CHAPTERS"
-        private val spoilerPrefsEntries =
-            arrayOf("Masquer les chapitres spoiler/RAW (recommandé)", "Afficher tous les chapitres")
-        private val spoilerPrefsValues = arrayOf("hide", "show")
+        private const val SHOW_SPOILER_CHAPTERS_TITLE =
+            "Les chapitres en Anglais ou non traduit sont upload en tant que \" Spoilers \" sur Japscan"
+        private const val SHOW_SPOILER_CHAPTERS = "JAPSCAN_SPOILER_CHAPTERS"
+        private val prefsEntries = arrayOf(
+            "Montrer uniquement les chapitres traduit en Français",
+            "Montrer les chapitres spoiler",
+        )
+        private val prefsEntryValues = arrayOf("hide", "show")
     }
 
-    private fun getChapterListPref() = preferences.getString(SHOW_SPOILER_CHAPTERS_PREF, "hide")
+    private fun chapterListPref() = preferences.getString(SHOW_SPOILER_CHAPTERS, "hide")
 
     override fun headersBuilder() = super.headersBuilder()
-        .add("referer", "$currentBaseUrl/")
+        .add("referer", "$internalBaseUrl/")
 
     // Popular
-    override fun popularMangaRequest(page: Int): Request {
-        return GET("$currentBaseUrl/mangas/?sort=popular&p=$page", headers)
-    }
+    override fun popularMangaRequest(page: Int): Request =
+        GET("$internalBaseUrl/mangas/?sort=popular&p=$page", headers)
 
     override fun popularMangaNextPageSelector() = ".pagination > li:last-child:not(.disabled)"
 
@@ -111,9 +113,8 @@ class Japscan : ConfigurableSource, ParsedHttpSource() {
     }
 
     // Latest
-    override fun latestUpdatesRequest(page: Int): Request {
-        return GET("$currentBaseUrl/mangas/?sort=updated&p=$page", headers)
-    }
+    override fun latestUpdatesRequest(page: Int): Request =
+        GET("$internalBaseUrl/mangas/?sort=updated&p=$page", headers)
 
     override fun latestUpdatesSelector() = popularMangaSelector()
 
@@ -133,11 +134,11 @@ class Japscan : ConfigurableSource, ParsedHttpSource() {
                 .add("X-Requested-With", "XMLHttpRequest")
                 .build()
 
-            return POST("$currentBaseUrl/ls/", searchHeaders, formBody)
+            return POST("$internalBaseUrl/ls/", searchHeaders, formBody)
         }
 
         // Sinon, utiliser les filtres
-        val url = currentBaseUrl.toHttpUrl().newBuilder().apply {
+        val url = internalBaseUrl.toHttpUrl().newBuilder().apply {
             addPathSegment("mangas")
             addPathSegment("")
 
@@ -239,12 +240,11 @@ class Japscan : ConfigurableSource, ParsedHttpSource() {
             return MangasPage(mangaList, hasNextPage = false)
         }
 
-        val baseUrlHost = currentBaseUrl.toHttpUrl().host
+        val baseUrlHost = internalBaseUrl.toHttpUrl().host
         val document = response.asJsoup()
         val manga = document
             .select(searchMangaSelector())
-            .toList()
-            .filter {
+            .filter { it ->
                 val href = it.select("a").attr("abs:href")
                 href.isNotEmpty() && href.toHttpUrl().host == baseUrlHost
             }
@@ -259,12 +259,11 @@ class Japscan : ConfigurableSource, ParsedHttpSource() {
     private fun searchMangaFromJson(jsonObj: JsonObject): SManga = SManga.create().apply {
         url = jsonObj["url"]!!.jsonPrimitive.content
         title = jsonObj["name"]!!.jsonPrimitive.content
-        thumbnail_url = currentBaseUrl + jsonObj["image"]!!.jsonPrimitive.content
+        thumbnail_url = internalBaseUrl + jsonObj["image"]!!.jsonPrimitive.content
     }
 
-    override fun mangaDetailsRequest(manga: SManga): Request {
-        return GET(currentBaseUrl + manga.url, headers)
-    }
+    override fun mangaDetailsRequest(manga: SManga): Request =
+        GET(internalBaseUrl + manga.url, headers)
 
     override fun mangaDetailsParse(document: Document): SManga {
         val infoElement = document.selectFirst("#main .card-body")!!
@@ -295,16 +294,13 @@ class Japscan : ConfigurableSource, ParsedHttpSource() {
         else -> SManga.UNKNOWN
     }
 
-    override fun getChapterUrl(chapter: SChapter): String {
-        return currentBaseUrl + chapter.url
-    }
+    override fun getChapterUrl(chapter: SChapter): String = internalBaseUrl + chapter.url
 
-    override fun chapterListRequest(manga: SManga): Request {
-        return GET(currentBaseUrl + manga.url, headers)
-    }
+    override fun chapterListRequest(manga: SManga): Request =
+        GET(internalBaseUrl + manga.url, headers)
 
     override fun chapterListSelector() = "#list_chapters > div.collapse > div.list_chapters" +
-        if (getChapterListPref() == "hide") {
+        if (chapterListPref() == "hide") {
             ":not(:has(.badge:contains(SPOILER),.badge:contains(RAW),.badge:contains(VUS)))"
         } else {
             ""
@@ -357,41 +353,36 @@ class Japscan : ConfigurableSource, ParsedHttpSource() {
         val imagesLink: List<String>,
     )
 
-    @Throws(Exception::class)
     override fun fetchPageList(chapter: SChapter): Observable<List<Page>> {
         try {
-            val response = client.newCall(GET("$currentBaseUrl${chapter.url}")).execute()
+            val document = client.newCall(GET("$internalBaseUrl${chapter.url}")).execute().asJsoup()
 
-            if (!response.isSuccessful) {
-                throw Exception("Erreur HTTP : ${response.code}")
-            }
-
-            val document = response.asJsoup()
-            val iElements = document.select("i[id]")
+            // Chercher l'attribut data-* avec les données cryptées
+            // Le site change dynamiquement le nom (data-atad, data-f3db1f, data-ad4fef, etc.)
+            val iElements = document.select("i")
 
             var atadBrut: String? = null
+            var maxLength = 0
 
+            // Trouver l'attribut data-* le plus long (c'est forcément les données cryptées)
             for (element in iElements) {
                 for (attr in element.attributes()) {
                     val attrName = attr.key
+                    val value = attr.value
+
+                    // Ignorer les attributs techniques connus
                     if (attrName.startsWith("data-") &&
-                        !attrName.contains("index") &&
-                        !attrName.contains("eb11ad") &&
-                        !attrName.contains("c49be9") &&
-                        !attrName.contains("y58365")
+                        attrName != "data-index" &&
+                        value.length > maxLength
                     ) {
-                        val value = attr.value
-                        if (value.length > 100) {
-                            atadBrut = value
-                            break
-                        }
+                        atadBrut = value
+                        maxLength = value.length
                     }
                 }
-                if (atadBrut != null) break
             }
 
             if (atadBrut == null || atadBrut.length < 7) {
-                throw Exception("Attribut data crypté introuvable")
+                throw Exception("Impossible de trouver les données cryptées")
             }
 
             val atad = atadBrut.substring(7)
@@ -408,40 +399,21 @@ class Japscan : ConfigurableSource, ParsedHttpSource() {
                     (if (index != -1) mapping[index] else char).toString()
                 }
 
-            val decodedBytes = Base64.decode(decrypted, Base64.DEFAULT)
-            val jsonString = String(decodedBytes)
-            val fromB64 = jsonString.parseAs<ChapterDetails>()
+            val fromB64 = String(Base64.decode(decrypted, Base64.DEFAULT)).parseAs<ChapterDetails>()
 
-            if (fromB64.imagesLink.isEmpty()) {
-                throw UnsupportedOperationException("Can't parse Images")
-            }
+            if (fromB64.imagesLink.isEmpty()) throw UnsupportedOperationException("Can't parse Images")
 
-            val pages = fromB64.imagesLink
-                .filter { url -> !isUnwantedUrl(url) }
-                .mapIndexed { i, url ->
+            return Observable.just(
+                fromB64.imagesLink.mapIndexed { i, url ->
                     Page(i, imageUrl = "$url?o=1")
-                }
-
-            return Observable.just(pages)
+                },
+            )
         } catch (e: Exception) {
             return fallbackFetchPageList(chapter)
         }
     }
 
-    /**
-     * Vérifie si une URL doit être filtrée (publicité, etc.)
-     */
-    private fun isUnwantedUrl(url: String): Boolean {
-        val unwantedPatterns = listOf(
-            "?fa=",
-            "?ad=",
-            "?promo=",
-        )
-
-        return unwantedPatterns.any { pattern -> url.contains(pattern) }
-    }
-
-    private fun fallbackFetchPageList(chapter: SChapter): Observable<List<Page>> {
+    fun fallbackFetchPageList(chapter: SChapter): Observable<List<Page>> {
         val interfaceName = randomString()
 
         val handler = Handler(Looper.getMainLooper())
@@ -487,7 +459,7 @@ class Japscan : ConfigurableSource, ParsedHttpSource() {
             }
 
             innerWv.loadUrl(
-                "$currentBaseUrl${chapter.url}",
+                "$internalBaseUrl${chapter.url}",
                 headers.toMap(),
             )
         }
@@ -499,12 +471,10 @@ class Japscan : ConfigurableSource, ParsedHttpSource() {
             throw Exception("Erreur lors de la récupération des pages")
         }
 
-        val baseUrlHost = currentBaseUrl.toHttpUrl().host.substringAfter("www.")
+        val baseUrlHost = internalBaseUrl.toHttpUrl().host.substringAfter("www.")
         val images = jsInterface
             .images
-            .toList()
             .filter { it.toHttpUrl().host.endsWith(baseUrlHost) }
-            .filter { url -> !isUnwantedUrl(url) }
             .mapIndexed { i, url ->
                 Page(i, imageUrl = url)
             }
@@ -659,35 +629,16 @@ class Japscan : ConfigurableSource, ParsedHttpSource() {
     private class YearFilter : Filter.Group<YearCheckBox>(
         "Années",
         listOf(
-            YearCheckBox("1929-1980"),
-            YearCheckBox("1981-1990"),
-            YearCheckBox("1991-2000"),
-            YearCheckBox("2000"),
-            YearCheckBox("2001"),
-            YearCheckBox("2002"),
-            YearCheckBox("2003"),
-            YearCheckBox("2004"),
-            YearCheckBox("2005"),
-            YearCheckBox("2006"),
-            YearCheckBox("2007"),
-            YearCheckBox("2008"),
-            YearCheckBox("2009"),
-            YearCheckBox("2010"),
-            YearCheckBox("2011"),
-            YearCheckBox("2012"),
-            YearCheckBox("2013"),
-            YearCheckBox("2014"),
-            YearCheckBox("2015"),
-            YearCheckBox("2016"),
-            YearCheckBox("2017"),
-            YearCheckBox("2018"),
-            YearCheckBox("2019"),
-            YearCheckBox("2020"),
-            YearCheckBox("2021"),
-            YearCheckBox("2022"),
-            YearCheckBox("2023"),
-            YearCheckBox("2024"),
-            YearCheckBox("2025"),
+            YearCheckBox("1929-1980"), YearCheckBox("1981-1990"), YearCheckBox("1991-2000"),
+            YearCheckBox("2000"), YearCheckBox("2001"), YearCheckBox("2002"),
+            YearCheckBox("2003"), YearCheckBox("2004"), YearCheckBox("2005"),
+            YearCheckBox("2006"), YearCheckBox("2007"), YearCheckBox("2008"),
+            YearCheckBox("2009"), YearCheckBox("2010"), YearCheckBox("2011"),
+            YearCheckBox("2012"), YearCheckBox("2013"), YearCheckBox("2014"),
+            YearCheckBox("2015"), YearCheckBox("2016"), YearCheckBox("2017"),
+            YearCheckBox("2018"), YearCheckBox("2019"), YearCheckBox("2020"),
+            YearCheckBox("2021"), YearCheckBox("2022"), YearCheckBox("2023"),
+            YearCheckBox("2024"), YearCheckBox("2025"),
         ),
     )
 
@@ -719,18 +670,18 @@ class Japscan : ConfigurableSource, ParsedHttpSource() {
         }
 
         val chapterListPref = androidx.preference.ListPreference(screen.context).apply {
-            key = SHOW_SPOILER_CHAPTERS_PREF
+            key = SHOW_SPOILER_CHAPTERS
             title = SHOW_SPOILER_CHAPTERS_TITLE
-            entries = spoilerPrefsEntries
-            entryValues = spoilerPrefsValues
+            entries = prefsEntries
+            entryValues = prefsEntryValues
             setDefaultValue("hide")
             summary = "%s"
 
             setOnPreferenceChangeListener { _, newValue ->
                 val selected = newValue as String
-                val index = findIndexOfValue(selected)
+                val index = this.findIndexOfValue(selected)
                 val entry = entryValues[index] as String
-                preferences.edit().putString(SHOW_SPOILER_CHAPTERS_PREF, entry).commit()
+                preferences.edit().putString(SHOW_SPOILER_CHAPTERS, entry).commit()
             }
         }
 
