@@ -1,9 +1,8 @@
 ext {
     extName = 'Soft Epsilon Scan'
     extClass = '.SoftEpsilonScan'
-    themePkg = 'madara'
     baseUrl = 'https://epsilonsoft.to'
-    overrideVersionCode = 2
+    extVersionCode = 1
     isNsfw = false
 }
 

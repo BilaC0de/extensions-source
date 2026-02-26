@@ -33,6 +33,7 @@ class ScanManga : HttpSource(), ConfigurableSource {
     override val name = "Scan-Manga"
 
     override val baseUrl = "https://m.scan-manga.com"
+    private val wwwBaseUrl = "https://www.scan-manga.com"
     private val baseImageUrl = "https://static.scan-manga.com/img/manga"
 
     override val lang = "fr"
@@ -42,7 +43,6 @@ class ScanManga : HttpSource(), ConfigurableSource {
         Injekt.get<android.app.Application>().getSharedPreferences("source_$id", 0x0000)
     }
 
-    // User-Agents rotatifs pour éviter la détection
     private val rotatingUserAgents = listOf(
         "Mozilla/5.0 (Linux; Android 11; SM-G991B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.120 Mobile Safari/537.36",
         "Mozilla/5.0 (Linux; Android 12; Pixel 6) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/96.0.4664.45 Mobile Safari/537.36",
@@ -63,37 +63,17 @@ class ScanManga : HttpSource(), ConfigurableSource {
         return rotatingUserAgents[hourOfDay.toInt()]
     }
 
-    private fun getCurrentUserAgent(): String {
-        return when (getUserAgentMode()) {
-            "custom" -> {
-                val custom = getCustomUserAgent()
-                if (custom.isNotBlank()) {
-                    custom
-                } else {
-                    super.headersBuilder().build()["User-Agent"] ?: ""
-                }
-            }
-            "rotating" -> getRotatingUserAgent()
-            else -> super.headersBuilder().build()["User-Agent"] ?: ""
-        }
-    }
-
     override fun headersBuilder(): Headers.Builder {
         val builder =
             super.headersBuilder().add("Accept-Language", "fr-FR,fr;q=0.9,en-US;q=0.8,en;q=0.7")
-
         when (getUserAgentMode()) {
             "custom" -> {
                 val custom = getCustomUserAgent()
-                if (custom.isNotBlank()) {
-                    builder.set("User-Agent", custom)
-                }
+                if (custom.isNotBlank()) builder.set("User-Agent", custom)
             }
-            "rotating" -> {
-                builder.set("User-Agent", getRotatingUserAgent())
-            }
-        }
 
+            "rotating" -> builder.set("User-Agent", getRotatingUserAgent())
+        }
         return builder
     }
 
@@ -102,11 +82,7 @@ class ScanManga : HttpSource(), ConfigurableSource {
             key = "pref_useragent_mode"
             title = "Mode User-Agent"
             summary = "Choisir comment gérer le User-Agent"
-            entries = arrayOf(
-                "Par défaut (Mihon)",
-                "Personnalisé",
-                "Rotatif automatique",
-            )
+            entries = arrayOf("Par défaut (Mihon)", "Personnalisé", "Rotatif automatique")
             entryValues = arrayOf("default", "custom", "rotating")
             setDefaultValue("default")
         }
@@ -180,7 +156,6 @@ class ScanManga : HttpSource(), ConfigurableSource {
         return try {
             val cache = mutableMapOf<String, Pair<String, Long>>()
             val now = System.currentTimeMillis()
-
             val allPrefs = preferences.all
             allPrefs.keys.filter { it.startsWith("cover_") }.forEach { key ->
                 try {
@@ -190,10 +165,8 @@ class ScanManga : HttpSource(), ConfigurableSource {
                         if (parts.size == 2) {
                             val url = parts[0]
                             val timestamp = parts[1].toLong()
-
                             if (now - timestamp < persistentCacheDuration) {
-                                val mangaUrl = key.removePrefix("cover_")
-                                cache[mangaUrl] = url to timestamp
+                                cache[key.removePrefix("cover_")] = url to timestamp
                             } else {
                                 preferences.edit().remove(key).apply()
                             }
@@ -213,24 +186,18 @@ class ScanManga : HttpSource(), ConfigurableSource {
         try {
             val editor = preferences.edit()
             val now = System.currentTimeMillis()
-
             persistentCache.entries.forEach { (key, value) ->
                 if (now - value.second < persistentCacheDuration) {
-                    val prefKey = "cover_$key"
-                    val prefValue = "${value.first}|${value.second}"
-                    editor.putString(prefKey, prefValue)
+                    editor.putString("cover_$key", "${value.first}|${value.second}")
                 }
             }
-
             editor.apply()
         } catch (e: Exception) {
-            // Ignorer les erreurs
         }
     }
 
     private fun getCoverUrl(mangaUrl: String): String? {
         val now = System.currentTimeMillis()
-
         return when (getCacheMode()) {
             "hybrid" -> getCoverHybridCache(mangaUrl, now)
             "memory" -> getCoverFromMemoryCache(mangaUrl, now)
@@ -247,7 +214,6 @@ class ScanManga : HttpSource(), ConfigurableSource {
                 memoryCache.remove(mangaUrl)
             }
         }
-
         persistentCache[mangaUrl]?.let { cached ->
             if (now - cached.second < persistentCacheDuration) {
                 memoryCache[mangaUrl] = cached
@@ -256,14 +222,11 @@ class ScanManga : HttpSource(), ConfigurableSource {
                 persistentCache.remove(mangaUrl)
             }
         }
-
         return fetchCoverFromServer(mangaUrl)?.also { coverUrl ->
             val entry = coverUrl to now
             memoryCache[mangaUrl] = entry
             persistentCache[mangaUrl] = entry
-            Thread {
-                savePersistentCache()
-            }.start()
+            Thread { savePersistentCache() }.start()
         }
     }
 
@@ -275,7 +238,6 @@ class ScanManga : HttpSource(), ConfigurableSource {
                 memoryCache.remove(mangaUrl)
             }
         }
-
         return fetchCoverFromServer(mangaUrl)?.also { coverUrl ->
             memoryCache[mangaUrl] = coverUrl to now
         }
@@ -289,12 +251,9 @@ class ScanManga : HttpSource(), ConfigurableSource {
                 persistentCache.remove(mangaUrl)
             }
         }
-
         return fetchCoverFromServer(mangaUrl)?.also { coverUrl ->
             persistentCache[mangaUrl] = coverUrl to now
-            Thread {
-                savePersistentCache()
-            }.start()
+            Thread { savePersistentCache() }.start()
         }
     }
 
@@ -313,7 +272,6 @@ class ScanManga : HttpSource(), ConfigurableSource {
     private fun loadCoversInBulk(mangas: List<SManga>) {
         val now = System.currentTimeMillis()
         val mangasNeedingCovers = mutableListOf<SManga>()
-
         mangas.forEach { manga ->
             val coverUrl = when (getCacheMode()) {
                 "hybrid" -> {
@@ -321,19 +279,15 @@ class ScanManga : HttpSource(), ConfigurableSource {
                         if (now - cached.second < MEMORY_CACHE_DURATION) {
                             cached.first
                         } else {
-                            memoryCache.remove(manga.url)
-                            null
+                            memoryCache.remove(manga.url); null
+                        }
+                    } ?: persistentCache[manga.url]?.let { cached ->
+                        if (now - cached.second < persistentCacheDuration) {
+                            memoryCache[manga.url] = cached; cached.first
+                        } else {
+                            persistentCache.remove(manga.url); null
                         }
                     }
-                        ?: persistentCache[manga.url]?.let { cached ->
-                            if (now - cached.second < persistentCacheDuration) {
-                                memoryCache[manga.url] = cached
-                                cached.first
-                            } else {
-                                persistentCache.remove(manga.url)
-                                null
-                            }
-                        }
                 }
 
                 "memory" -> {
@@ -341,8 +295,7 @@ class ScanManga : HttpSource(), ConfigurableSource {
                         if (now - cached.second < MEMORY_CACHE_DURATION) {
                             cached.first
                         } else {
-                            memoryCache.remove(manga.url)
-                            null
+                            memoryCache.remove(manga.url); null
                         }
                     }
                 }
@@ -352,33 +305,23 @@ class ScanManga : HttpSource(), ConfigurableSource {
                         if (now - cached.second < persistentCacheDuration) {
                             cached.first
                         } else {
-                            persistentCache.remove(manga.url)
-                            null
+                            persistentCache.remove(manga.url); null
                         }
                     }
                 }
 
                 else -> null
             }
-
             if (coverUrl != null) {
                 manga.thumbnail_url = coverUrl
             } else {
                 mangasNeedingCovers.add(manga)
             }
         }
-
         if (mangasNeedingCovers.isNotEmpty()) {
             when (getLoadingMode()) {
-                "fast" -> {
-                    Thread {
-                        loadMissingCoversInBackground(mangasNeedingCovers)
-                    }.start()
-                }
-
-                "complete" -> {
-                    loadMissingCoversInBackground(mangasNeedingCovers)
-                }
+                "fast" -> Thread { loadMissingCoversInBackground(mangasNeedingCovers) }.start()
+                "complete" -> loadMissingCoversInBackground(mangasNeedingCovers)
             }
         }
     }
@@ -397,7 +340,6 @@ class ScanManga : HttpSource(), ConfigurableSource {
                     }
                 }
             }
-
             threads.forEach { it.start() }
             threads.forEach {
                 try {
@@ -406,33 +348,24 @@ class ScanManga : HttpSource(), ConfigurableSource {
                     return
                 }
             }
-
-            if (batchIndex < mangas.chunked(batchSize).size - 1) {
-                Thread.sleep(200L)
-            }
+            if (batchIndex < mangas.chunked(batchSize).size - 1) Thread.sleep(200L)
         }
-
         Thread { savePersistentCache() }.start()
     }
 
-    override fun popularMangaRequest(page: Int): Request {
-        return GET("$baseUrl/TOP-Manga-Webtoon-36.html", headers)
-    }
+    override fun popularMangaRequest(page: Int): Request =
+        GET("$baseUrl/TOP-Manga-Webtoon-36.html", headers)
 
     override fun popularMangaParse(response: Response): MangasPage {
         val mangas = response.asJsoup().select("#carouselTOPContainer > div.top").map { element ->
             val titleElement = element.selectFirst("a.atop")!!
-            val mangaUrl = titleElement.attr("href")
-
             SManga.create().apply {
                 title = titleElement.text()
-                setUrlWithoutDomain(mangaUrl)
+                setUrlWithoutDomain(titleElement.attr("href"))
                 thumbnail_url = null
             }
         }
-
         loadCoversInBulk(mangas)
-
         return MangasPage(mangas, false)
     }
 
@@ -441,34 +374,27 @@ class ScanManga : HttpSource(), ConfigurableSource {
     override fun latestUpdatesParse(response: Response): MangasPage {
         val mangas = response.asJsoup().select("#content_news .publi").map { element ->
             val mangaElement = element.selectFirst("a.l_manga")!!
-            val mangaUrl = mangaElement.attr("href")
-
             SManga.create().apply {
                 title = mangaElement.text()
-                setUrlWithoutDomain(mangaUrl)
+                setUrlWithoutDomain(mangaElement.attr("href"))
                 thumbnail_url = null
             }
         }
-
         loadCoversInBulk(mangas)
-
         return MangasPage(mangas, false)
     }
 
     override fun searchMangaRequest(page: Int, query: String, filters: FilterList): Request {
         val url = "$baseUrl/api/search/quick.json".toHttpUrl().newBuilder()
             .addQueryParameter("term", query).build().toString()
-
         val newHeaders =
             headers.newBuilder().add("Content-type", "application/json; charset=UTF-8").build()
-
         return GET(url, newHeaders)
     }
 
     override fun searchMangaParse(response: Response): MangasPage {
         val json = response.body.string()
         if (json == "[]") return MangasPage(emptyList(), false)
-
         return MangasPage(
             json.parseAs<MangaSearchDto>().title?.map {
                 SManga.create().apply {
@@ -483,20 +409,17 @@ class ScanManga : HttpSource(), ConfigurableSource {
 
     override fun mangaDetailsParse(response: Response): SManga {
         val document = response.asJsoup()
-
         return SManga.create().apply {
             title = document.select("h1.main_title[itemprop=name]").text()
             author = document.select("div[itemprop=author]").text()
             description = document.selectFirst("div.titres_desc[itemprop=description]")?.text()
             genre = document.selectFirst("div.titres_souspart span[itemprop=genre]")?.text()
-
             val statutText = document.selectFirst("div.titres_souspart")?.ownText()
             status = when {
                 statutText?.contains("En cours", ignoreCase = true) == true -> SManga.ONGOING
                 statutText?.contains("Terminé", ignoreCase = true) == true -> SManga.COMPLETED
                 else -> SManga.UNKNOWN
             }
-
             thumbnail_url = document.select("div.full_img_serie img[itemprop=image]").attr("src")
         }
     }
@@ -506,10 +429,8 @@ class ScanManga : HttpSource(), ConfigurableSource {
         return document.select("div.chapt_m").map { element ->
             val linkEl = element.selectFirst("td.publimg span.i a")!!
             val titleEl = element.selectFirst("td.publititle")
-
             val chapterName = linkEl.text()
             val extraTitle = titleEl?.text()
-
             SChapter.create().apply {
                 name =
                     if (!extraTitle.isNullOrEmpty()) "$chapterName - $extraTitle" else chapterName
@@ -523,43 +444,27 @@ class ScanManga : HttpSource(), ConfigurableSource {
             Regex("""eval\(function\(h,u,n,t,e,r\)\{.*?\}\("([^"]+)",\d+,"([^"]+)",(\d+),(\d+),\d+\)\)""")
         val (encoded, mask, intervalStr, optionStr) = regex.find(obfuscatedJs)?.destructured
             ?: error("Failed to match obfuscation pattern")
-
         val interval = intervalStr.toInt()
         val option = optionStr.toInt()
         val delimiter = mask[option]
         val tokens = encoded.split(delimiter).filter { it.isNotEmpty() }
         val reversedMap = mask.withIndex().associate { it.value to it.index }
-
         return buildString {
             for (token in tokens) {
                 val digitString = token.map { c ->
                     reversedMap[c]?.toString() ?: error("Invalid masked character: $c")
                 }.joinToString("")
-
                 val number = digitString.toIntOrNull(option)
                     ?: error("Failed to parse token: $digitString as base $option")
-
-                val originalCharCode = number - interval
-
-                append(originalCharCode.toChar())
+                append((number - interval).toChar())
             }
         }
     }
 
     private fun dataAPI(data: String, idc: Int): UrlPayload {
         try {
-            Log.d(TAG, "=== dataAPI START ===")
-            Log.d(TAG, "Input: ${data.length} chars, IDC: $idc (0x${idc.toString(16)})")
-
-            // Étape 1: Base64 decode direct
             val compressedBytes = Base64.decode(data, Base64.DEFAULT)
-            Log.d(TAG, "Decoded: ${compressedBytes.size} bytes")
-            Log.d(TAG, "First 10 bytes: ${compressedBytes.take(10).joinToString { (it.toInt() and 0xFF).toString() }}")
-
-            // Étape 2: Inflate (essayer les deux modes)
             var inflated: String? = null
-
-            // Essai avec header zlib
             try {
                 val inf = Inflater(false)
                 inf.setInput(compressedBytes)
@@ -572,10 +477,7 @@ class ScanManga : HttpSource(), ConfigurableSource {
                 }
                 inf.end()
                 inflated = out.toString("UTF-8")
-                Log.d(TAG, "✓ Inflated with zlib: ${inflated.length} chars")
             } catch (e: Exception) {
-                Log.d(TAG, "✗ Zlib failed: ${e.message}")
-                // Essai sans header
                 try {
                     val inf = Inflater(true)
                     inf.setInput(compressedBytes)
@@ -588,33 +490,22 @@ class ScanManga : HttpSource(), ConfigurableSource {
                     }
                     inf.end()
                     inflated = out.toString("UTF-8")
-                    Log.d(TAG, "✓ Inflated raw: ${inflated.length} chars")
                 } catch (e2: Exception) {
-                    Log.e(TAG, "✗ Both inflate failed", e2)
+                    Log.e(TAG, "Both inflate failed", e2)
                     throw e2
                 }
             }
-
-            if (inflated == null) {
-                throw Exception("Decompression failed with both methods")
-            }
-
-            Log.d(TAG, "Content start: ${inflated.take(100)}")
-
-            // Étape 3: Remove suffix
+            if (inflated == null) throw Exception("Decompression failed")
             val hex = idc.toString(16)
             val clean = inflated.removeSuffix(hex)
-
-            // Étape 4: Reverse
             val rev = clean.reversed()
-
-            // Étape 5: Final decode
-            val json = String(Base64.decode(rev, Base64.DEFAULT), Charsets.UTF_8)
+            val padding = (4 - rev.length % 4) % 4
+            val revPadded = rev + "=".repeat(padding)
+            val json = String(Base64.decode(revPadded, Base64.DEFAULT), Charsets.UTF_8)
             Log.d(TAG, "✓ Final JSON: $json")
-
             return json.parseAs<UrlPayload>()
         } catch (e: Exception) {
-            Log.e(TAG, "=== FAILED ===", e)
+            Log.e(TAG, "dataAPI FAILED", e)
             throw e
         }
     }
@@ -622,74 +513,56 @@ class ScanManga : HttpSource(), ConfigurableSource {
     override fun pageListParse(response: Response): List<Page> {
         val document = response.asJsoup()
         val packedScript = document.selectFirst("script:containsData(h,u,n,t,e,r)")!!.data()
-
-        Log.d(TAG, "pageListParse - Found packed script")
-
         val unpackedScript = decodeHunter(packedScript)
-        Log.d(TAG, "pageListParse - Unpacked script (first 200 chars): ${unpackedScript.take(200)}")
 
         val parametersRegex = Regex("""sml = '([^']+)';\n?.*var sme = '([^']+)'""")
-
         val (sml, sme) = parametersRegex.find(unpackedScript)?.destructured
             ?: error("Failed to extract parameters from script.")
-
-        Log.d(TAG, "pageListParse - sml: $sml")
-        Log.d(TAG, "pageListParse - sme: $sme")
 
         val chapterInfoRegex = Regex("""const idc = (\d+)""")
         val (chapterId) = chapterInfoRegex.find(packedScript)?.destructured
             ?: error("Failed to extract chapter ID.")
 
-        Log.d(TAG, "pageListParse - Chapter ID: $chapterId")
+        // URL source du chapitre : même chemin, mais sur www
+        val chapterPath = document.baseUri().toHttpUrl().encodedPath
+        val chapterSourceUrl = "$wwwBaseUrl$chapterPath"
 
-        // Chercher le sous-domaine API dans le script
-        val apiDomainRegex = Regex("""(?:var\s+)?(?:api_url|apiUrl|API_URL)\s*=\s*['"]https?://([^/'"]+)""")
-        val apiDomain = apiDomainRegex.find(unpackedScript)?.groupValues?.get(1)
-            ?: apiDomainRegex.find(packedScript)?.groupValues?.get(1)
-            ?: run {
-                // Essayer d'autres patterns
-                val altRegex = Regex("""['"]https?://([a-z0-9-]+\.scan-manga\.com)/(?:api/)?lel/""")
-                altRegex.find(unpackedScript)?.groupValues?.get(1)
-                    ?: altRegex.find(packedScript)?.groupValues?.get(1)
-                    ?: "bqj.scan-manga.com" // fallback
-            }
-
-        Log.d(TAG, "pageListParse - API Domain: $apiDomain")
+        Log.d(TAG, "Chapter ID: $chapterId | sml: $sml | sme: $sme")
 
         val mediaType = "application/json; charset=UTF-8".toMediaType()
         val requestBody = """{"a":"$sme","b":"$sml"}"""
+        val apiUrl = "https://bqj.scan-manga.com/lel/$chapterId.json"
 
-        val documentUrl = document.baseUri().toHttpUrl()
-
-        val apiUrl = "https://$apiDomain/lel/$chapterId.json"
-        Log.d(TAG, "pageListParse - Full API URL: $apiUrl")
-        Log.d(TAG, "pageListParse - Request body: $requestBody")
+        Log.d(TAG, "POST $apiUrl | source: $chapterSourceUrl | body: $requestBody")
 
         val pageListRequest = POST(
             apiUrl,
             headers.newBuilder()
-                .add("Origin", "${documentUrl.scheme}://${documentUrl.host}")
-                .add("Referer", documentUrl.toString())
-                .add("Token", "yf")
-                .build(),
+                // Reproduire exactement les headers vus dans HTTP Toolkit
+                .set("Accept", "*/*").set("Origin", wwwBaseUrl).set("Referer", "$wwwBaseUrl/")
+                .add("source", chapterSourceUrl).add("Token", "yf").add("Sec-Fetch-Dest", "empty")
+                .add("Sec-Fetch-Mode", "cors").add("Sec-Fetch-Site", "same-site").build(),
             requestBody.toRequestBody(mediaType),
         )
 
-        val lelResponse = client.newBuilder()
-            .cookieJar(CookieJar.NO_COOKIES)
-            .build()
-            .newCall(pageListRequest)
-            .execute()
-            .use { resp ->
-                if (!resp.isSuccessful) {
-                    val errorBody = resp.body.string()
-                    Log.e(TAG, "pageListParse - Error response: ${resp.code} - $errorBody")
-                    error("Unexpected error while fetching lel: ${resp.code} - $errorBody")
+        val lelResponse =
+            client.newBuilder().cookieJar(CookieJar.NO_COOKIES).build().newCall(pageListRequest)
+                .execute().use { resp ->
+                    val responseBody = resp.body.string()
+                    Log.d(TAG, "Réponse (HTTP ${resp.code}): ${responseBody.take(200)}")
+
+                    if (responseBody.contains("\"error\"")) {
+                        val errorCode =
+                            Regex(""""error"\s*:\s*"?(\w+)"?""").find(responseBody)?.groupValues?.get(
+                                1,
+                            ) ?: "inconnu"
+                        error("Erreur serveur $errorCode")
+                    }
+
+                    if (!resp.isSuccessful) error("HTTP ${resp.code}")
+
+                    dataAPI(responseBody, chapterId.toInt())
                 }
-                val responseBody = resp.body.string()
-                Log.d(TAG, "pageListParse - Response body (first 200 chars): ${responseBody.take(200)}")
-                dataAPI(responseBody, chapterId.toInt())
-            }
 
         return lelResponse.generateImageUrls().map { Page(it.first, imageUrl = it.second) }
     }
@@ -697,8 +570,7 @@ class ScanManga : HttpSource(), ConfigurableSource {
     override fun imageUrlParse(response: Response): String = throw UnsupportedOperationException()
 
     override fun imageRequest(page: Page): Request {
-        val imgHeaders = headers.newBuilder().add("Origin", baseUrl).build()
-
+        val imgHeaders = headers.newBuilder().add("Origin", wwwBaseUrl).build()
         return GET(page.imageUrl!!, imgHeaders)
     }
 }
