@@ -26,7 +26,6 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
 import uy.kohesive.injekt.Injekt
 import uy.kohesive.injekt.api.get
-import java.util.concurrent.ConcurrentHashMap
 import java.util.zip.Inflater
 
 class ScanManga : HttpSource(), ConfigurableSource {
@@ -41,6 +40,10 @@ class ScanManga : HttpSource(), ConfigurableSource {
 
     private val preferences: SharedPreferences by lazy {
         Injekt.get<android.app.Application>().getSharedPreferences("source_$id", 0x0000)
+    }
+
+    companion object {
+        private const val TAG = "ScanManga"
     }
 
     private val rotatingUserAgents = listOf(
@@ -98,260 +101,58 @@ class ScanManga : HttpSource(), ConfigurableSource {
             setDefaultValue("")
         }
         screen.addPreference(customUserAgentPref)
-
-        val cacheModePref = ListPreference(screen.context).apply {
-            key = "pref_cache_mode"
-            title = "Mode de cache des covers"
-            summary = "Cache hybride recommandé pour de meilleures performances"
-            entries =
-                arrayOf("Cache hybride (recommandé)", "Mémoire uniquement", "Persistant uniquement")
-            entryValues = arrayOf("hybrid", "memory", "persistent")
-            setDefaultValue("hybrid")
-        }
-        screen.addPreference(cacheModePref)
-
-        val loadingModePref = ListPreference(screen.context).apply {
-            key = "pref_loading_mode"
-            title = "Mode de chargement des covers"
-            summary = "Rapide = affichage immédiat, Complet = attendre toutes les covers"
-            entries = arrayOf("Rapide (affichage immédiat)", "Complet (attendre toutes les covers)")
-            entryValues = arrayOf("fast", "complete")
-            setDefaultValue("fast")
-        }
-        screen.addPreference(loadingModePref)
-
-        val batchSizePref = ListPreference(screen.context).apply {
-            key = "pref_batch_size"
-            title = "Taille des lots de chargement"
-            summary = "Plus grand = plus rapide mais plus de charge serveur"
-            entries = arrayOf("5 covers", "10 covers", "15 covers", "20 covers")
-            entryValues = arrayOf("5", "10", "15", "20")
-            setDefaultValue("15")
-        }
-        screen.addPreference(batchSizePref)
     }
 
-    private fun getCacheMode(): String =
-        preferences.getString("pref_cache_mode", "hybrid") ?: "hybrid"
+    // ─────────────────────────────────────────────────────────────
+    // COVERS VIA API BQJ
+    //
+    // Au lieu de charger chaque page manga pour récupérer la cover
+    // (lent, lourd), on appelle l'API JSON légère de bqj.
+    //
+    // URL : https://bqj.scan-manga.com/popmanga_ID.json
+    // Réponse : ["Titre", "Auteur", ..., "cover_1_123.jpg", ...]
+    //                                        ↑ index 5 = nom du fichier cover
+    //
+    // L'ID du manga est le nombre au début de l'URL :
+    // "/16224/Reincarnated-as-the-Grand-Duke.html" → ID = 16224
+    // ─────────────────────────────────────────────────────────────
 
-    private fun getBatchSize(): Int =
-        preferences.getString("pref_batch_size", "15")?.toIntOrNull() ?: 15
-
-    private fun getLoadingMode(): String =
-        preferences.getString("pref_loading_mode", "fast") ?: "fast"
-
-    companion object {
-        private val memoryCache = ConcurrentHashMap<String, Pair<String, Long>>()
-        private const val MEMORY_CACHE_DURATION = 3 * 24 * 60 * 60 * 1000L
-        private const val TAG = "ScanManga"
-    }
-
-    private val persistentCache: ConcurrentHashMap<String, Pair<String, Long>> by lazy {
-        ConcurrentHashMap(loadPersistentCache())
-    }
-
-    private val persistentCacheDuration = 7 * 24 * 60 * 60 * 1000L
-
-    private fun loadPersistentCache(): Map<String, Pair<String, Long>> {
+    private fun fetchCoverViaBqj(mangaUrl: String): String? {
         return try {
-            val cache = mutableMapOf<String, Pair<String, Long>>()
-            val now = System.currentTimeMillis()
-            val allPrefs = preferences.all
-            allPrefs.keys.filter { it.startsWith("cover_") }.forEach { key ->
-                try {
-                    val value = preferences.getString(key, null)
-                    if (value != null) {
-                        val parts = value.split("|")
-                        if (parts.size == 2) {
-                            val url = parts[0]
-                            val timestamp = parts[1].toLong()
-                            if (now - timestamp < persistentCacheDuration) {
-                                cache[key.removePrefix("cover_")] = url to timestamp
-                            } else {
-                                preferences.edit().remove(key).apply()
-                            }
-                        }
-                    }
-                } catch (e: Exception) {
-                    preferences.edit().remove(key).apply()
-                }
-            }
-            cache
+            // Extrait l'ID depuis l'URL ex : "/16224/Mon-Manga.html" → "16224"
+            val mangaId = mangaUrl.trimStart('/').substringBefore('/').toLongOrNull() ?: return null
+            val jsonUrl = "https://bqj.scan-manga.com/popmanga_$mangaId.json"
+            val raw = client.newCall(GET(jsonUrl, headers)).execute().use { it.body.string() }
+            val array = org.json.JSONArray(raw)
+            val filename = array.optString(5)
+            if (filename.isNotBlank()) "$baseImageUrl/$filename" else null
         } catch (e: Exception) {
-            emptyMap()
-        }
-    }
-
-    private fun savePersistentCache() {
-        try {
-            val editor = preferences.edit()
-            val now = System.currentTimeMillis()
-            persistentCache.entries.forEach { (key, value) ->
-                if (now - value.second < persistentCacheDuration) {
-                    editor.putString("cover_$key", "${value.first}|${value.second}")
-                }
-            }
-            editor.apply()
-        } catch (e: Exception) {
-        }
-    }
-
-    private fun getCoverUrl(mangaUrl: String): String? {
-        val now = System.currentTimeMillis()
-        return when (getCacheMode()) {
-            "hybrid" -> getCoverHybridCache(mangaUrl, now)
-            "memory" -> getCoverFromMemoryCache(mangaUrl, now)
-            "persistent" -> getCoverFromPersistentCache(mangaUrl, now)
-            else -> fetchCoverFromServer(mangaUrl)
-        }
-    }
-
-    private fun getCoverHybridCache(mangaUrl: String, now: Long): String? {
-        memoryCache[mangaUrl]?.let { cached ->
-            if (now - cached.second < MEMORY_CACHE_DURATION) {
-                return cached.first
-            } else {
-                memoryCache.remove(mangaUrl)
-            }
-        }
-        persistentCache[mangaUrl]?.let { cached ->
-            if (now - cached.second < persistentCacheDuration) {
-                memoryCache[mangaUrl] = cached
-                return cached.first
-            } else {
-                persistentCache.remove(mangaUrl)
-            }
-        }
-        return fetchCoverFromServer(mangaUrl)?.also { coverUrl ->
-            val entry = coverUrl to now
-            memoryCache[mangaUrl] = entry
-            persistentCache[mangaUrl] = entry
-            Thread { savePersistentCache() }.start()
-        }
-    }
-
-    private fun getCoverFromMemoryCache(mangaUrl: String, now: Long): String? {
-        memoryCache[mangaUrl]?.let { cached ->
-            if (now - cached.second < MEMORY_CACHE_DURATION) {
-                return cached.first
-            } else {
-                memoryCache.remove(mangaUrl)
-            }
-        }
-        return fetchCoverFromServer(mangaUrl)?.also { coverUrl ->
-            memoryCache[mangaUrl] = coverUrl to now
-        }
-    }
-
-    private fun getCoverFromPersistentCache(mangaUrl: String, now: Long): String? {
-        persistentCache[mangaUrl]?.let { cached ->
-            if (now - cached.second < persistentCacheDuration) {
-                return cached.first
-            } else {
-                persistentCache.remove(mangaUrl)
-            }
-        }
-        return fetchCoverFromServer(mangaUrl)?.also { coverUrl ->
-            persistentCache[mangaUrl] = coverUrl to now
-            Thread { savePersistentCache() }.start()
-        }
-    }
-
-    private fun fetchCoverFromServer(mangaUrl: String): String? {
-        return try {
-            val doc = client.newCall(GET(baseUrl + mangaUrl, headers)).execute().use {
-                it.asJsoup()
-            }
-            val coverUrl = doc.select("div.full_img_serie img[itemprop=image]").attr("src")
-            if (coverUrl.isNotBlank()) coverUrl else null
-        } catch (e: Exception) {
+            Log.w(TAG, "fetchCoverViaBqj failed pour $mangaUrl", e)
             null
         }
     }
 
-    private fun loadCoversInBulk(mangas: List<SManga>) {
-        val now = System.currentTimeMillis()
-        val mangasNeedingCovers = mutableListOf<SManga>()
-        mangas.forEach { manga ->
-            val coverUrl = when (getCacheMode()) {
-                "hybrid" -> {
-                    memoryCache[manga.url]?.let { cached ->
-                        if (now - cached.second < MEMORY_CACHE_DURATION) {
-                            cached.first
-                        } else {
-                            memoryCache.remove(manga.url); null
-                        }
-                    } ?: persistentCache[manga.url]?.let { cached ->
-                        if (now - cached.second < persistentCacheDuration) {
-                            memoryCache[manga.url] = cached; cached.first
-                        } else {
-                            persistentCache.remove(manga.url); null
-                        }
-                    }
-                }
-
-                "memory" -> {
-                    memoryCache[manga.url]?.let { cached ->
-                        if (now - cached.second < MEMORY_CACHE_DURATION) {
-                            cached.first
-                        } else {
-                            memoryCache.remove(manga.url); null
-                        }
-                    }
-                }
-
-                "persistent" -> {
-                    persistentCache[manga.url]?.let { cached ->
-                        if (now - cached.second < persistentCacheDuration) {
-                            cached.first
-                        } else {
-                            persistentCache.remove(manga.url); null
-                        }
-                    }
-                }
-
-                else -> null
-            }
-            if (coverUrl != null) {
-                manga.thumbnail_url = coverUrl
-            } else {
-                mangasNeedingCovers.add(manga)
-            }
-        }
-        if (mangasNeedingCovers.isNotEmpty()) {
-            when (getLoadingMode()) {
-                "fast" -> Thread { loadMissingCoversInBackground(mangasNeedingCovers) }.start()
-                "complete" -> loadMissingCoversInBackground(mangasNeedingCovers)
-            }
-        }
-    }
-
-    private fun loadMissingCoversInBackground(mangas: List<SManga>) {
-        val batchSize = getBatchSize()
-        mangas.chunked(batchSize).forEachIndexed { batchIndex, batch ->
-            val threads = batch.map { manga ->
-                Thread {
-                    fetchCoverFromServer(manga.url)?.let { coverUrl ->
-                        val now = System.currentTimeMillis()
-                        val entry = coverUrl to now
-                        manga.thumbnail_url = coverUrl
-                        memoryCache[manga.url] = entry
-                        persistentCache[manga.url] = entry
-                    }
-                }
-            }
-            threads.forEach { it.start() }
-            threads.forEach {
+    private fun loadCovers(mangas: List<SManga>) {
+        // 3 threads max pour éviter le 429 (trop de requêtes) sur bqj
+        val executor = java.util.concurrent.Executors.newFixedThreadPool(3)
+        mangas.forEachIndexed { index, manga ->
+            executor.submit {
                 try {
-                    it.join()
-                } catch (e: InterruptedException) {
-                    return
+                    // Petit délai pour étaler les requêtes
+                    if (index > 0) Thread.sleep((index % 3) * 150L)
+                    manga.thumbnail_url = fetchCoverViaBqj(manga.url)
+                } catch (e: Exception) {
+                    Log.w(TAG, "loadCovers failed pour ${manga.url}", e)
                 }
             }
-            if (batchIndex < mangas.chunked(batchSize).size - 1) Thread.sleep(200L)
         }
-        Thread { savePersistentCache() }.start()
+        executor.shutdown()
+        executor.awaitTermination(30, java.util.concurrent.TimeUnit.SECONDS)
     }
+
+    // ─────────────────────────────────────────────────────────────
+    // POPULAR (TOP Manga) — CODE ORIGINAL INCHANGÉ
+    // ─────────────────────────────────────────────────────────────
 
     override fun popularMangaRequest(page: Int): Request =
         GET("$baseUrl/TOP-Manga-Webtoon-36.html", headers)
@@ -365,9 +166,14 @@ class ScanManga : HttpSource(), ConfigurableSource {
                 thumbnail_url = null
             }
         }
-        loadCoversInBulk(mangas)
+        // Remplace le cache complexe par l'API bqj simple
+        loadCovers(mangas)
         return MangasPage(mangas, false)
     }
+
+    // ─────────────────────────────────────────────────────────────
+    // LATEST UPDATES — CODE ORIGINAL INCHANGÉ
+    // ─────────────────────────────────────────────────────────────
 
     override fun latestUpdatesRequest(page: Int): Request = GET(baseUrl, headers)
 
@@ -380,9 +186,14 @@ class ScanManga : HttpSource(), ConfigurableSource {
                 thumbnail_url = null
             }
         }
-        loadCoversInBulk(mangas)
+        // Remplace le cache complexe par l'API bqj simple
+        loadCovers(mangas)
         return MangasPage(mangas, false)
     }
+
+    // ─────────────────────────────────────────────────────────────
+    // SEARCH — CODE ORIGINAL INCHANGÉ
+    // ─────────────────────────────────────────────────────────────
 
     override fun searchMangaRequest(page: Int, query: String, filters: FilterList): Request {
         val url = "$baseUrl/api/search/quick.json".toHttpUrl().newBuilder()
@@ -407,6 +218,10 @@ class ScanManga : HttpSource(), ConfigurableSource {
         )
     }
 
+    // ─────────────────────────────────────────────────────────────
+    // MANGA DETAILS — CODE ORIGINAL INCHANGÉ
+    // ─────────────────────────────────────────────────────────────
+
     override fun mangaDetailsParse(response: Response): SManga {
         val document = response.asJsoup()
         return SManga.create().apply {
@@ -424,6 +239,10 @@ class ScanManga : HttpSource(), ConfigurableSource {
         }
     }
 
+    // ─────────────────────────────────────────────────────────────
+    // CHAPTER LIST — CODE ORIGINAL INCHANGÉ
+    // ─────────────────────────────────────────────────────────────
+
     override fun chapterListParse(response: Response): List<SChapter> {
         val document = response.asJsoup()
         return document.select("div.chapt_m").map { element ->
@@ -438,6 +257,10 @@ class ScanManga : HttpSource(), ConfigurableSource {
             }
         }
     }
+
+    // ─────────────────────────────────────────────────────────────
+    // PAGE LIST — CODE ORIGINAL INCHANGÉ
+    // ─────────────────────────────────────────────────────────────
 
     private fun decodeHunter(obfuscatedJs: String): String {
         val regex =
@@ -523,7 +346,6 @@ class ScanManga : HttpSource(), ConfigurableSource {
         val (chapterId) = chapterInfoRegex.find(packedScript)?.destructured
             ?: error("Failed to extract chapter ID.")
 
-        // URL source du chapitre : même chemin, mais sur www
         val chapterPath = document.baseUri().toHttpUrl().encodedPath
         val chapterSourceUrl = "$wwwBaseUrl$chapterPath"
 
@@ -537,11 +359,10 @@ class ScanManga : HttpSource(), ConfigurableSource {
 
         val pageListRequest = POST(
             apiUrl,
-            headers.newBuilder()
-                // Reproduire exactement les headers vus dans HTTP Toolkit
-                .set("Accept", "*/*").set("Origin", wwwBaseUrl).set("Referer", "$wwwBaseUrl/")
-                .add("source", chapterSourceUrl).add("Token", "yf").add("Sec-Fetch-Dest", "empty")
-                .add("Sec-Fetch-Mode", "cors").add("Sec-Fetch-Site", "same-site").build(),
+            headers.newBuilder().set("Accept", "*/*").set("Origin", wwwBaseUrl)
+                .set("Referer", "$wwwBaseUrl/").add("source", chapterSourceUrl).add("Token", "yf")
+                .add("Sec-Fetch-Dest", "empty").add("Sec-Fetch-Mode", "cors")
+                .add("Sec-Fetch-Site", "same-site").build(),
             requestBody.toRequestBody(mediaType),
         )
 
