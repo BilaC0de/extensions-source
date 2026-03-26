@@ -31,7 +31,9 @@ import java.text.SimpleDateFormat
 import java.util.Locale
 import java.util.TimeZone
 
-class PoseidonScans : HttpSource(), ConfigurableSource {
+class PoseidonScans :
+    HttpSource(),
+    ConfigurableSource {
 
     // ─── Préférences ────────────────────────────────────────────────────────────
 
@@ -86,13 +88,9 @@ class PoseidonScans : HttpSource(), ConfigurableSource {
 
     // ─── Helpers URL ─────────────────────────────────────────────────────────────
 
-    private fun String.toAbsoluteUrl(): String {
-        return if (this.startsWith("http")) this else "$domain$this"
-    }
+    private fun String.toAbsoluteUrl(): String = if (this.startsWith("http")) this else "$domain$this"
 
-    private fun slugToCoverUrl(slug: String): String {
-        return "$domain/api/covers/$slug.webp"
-    }
+    private fun slugToCoverUrl(slug: String): String = "$domain/api/covers/$slug.webp"
 
     private val isoDateFormatter =
         SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.ENGLISH).apply {
@@ -104,41 +102,27 @@ class PoseidonScans : HttpSource(), ConfigurableSource {
     // sont à domain/serie/... (sans 's').
     // Sans ces overrides, Tachiyomi construirait domain/series/serie/slug → 404.
 
-    override fun mangaDetailsRequest(manga: SManga): Request {
-        return GET("$domain${manga.url}", headers)
-    }
+    override fun mangaDetailsRequest(manga: SManga): Request = GET("$domain${manga.url}", headers)
 
-    override fun chapterListRequest(manga: SManga): Request {
-        return GET("$domain${manga.url}", headers)
-    }
+    override fun chapterListRequest(manga: SManga): Request = GET("$domain${manga.url}", headers)
 
-    override fun pageListRequest(chapter: SChapter): Request {
-        return GET("$domain${chapter.url}", headers)
-    }
+    override fun pageListRequest(chapter: SChapter): Request = GET("$domain${chapter.url}", headers)
 
     // ─── Popular Manga ────────────────────────────────────────────────────────────
     // /series?sortBy=popular — même format HTML que la recherche,
     // parsé par searchMangaParse.
 
-    override fun popularMangaRequest(page: Int): Request {
-        return buildSeriesRequest(page, sortBy = "popular")
-    }
+    override fun popularMangaRequest(page: Int): Request = buildSeriesRequest(page, sortBy = "popular")
 
-    override fun popularMangaParse(response: Response): MangasPage {
-        return searchMangaParse(response)
-    }
+    override fun popularMangaParse(response: Response): MangasPage = searchMangaParse(response)
 
     // ─── Latest Updates ───────────────────────────────────────────────────────────
     // /series?sortBy=latest_chapter — même format HTML que la recherche,
     // parsé par searchMangaParse.
 
-    override fun latestUpdatesRequest(page: Int): Request {
-        return buildSeriesRequest(page, sortBy = "latest_chapter")
-    }
+    override fun latestUpdatesRequest(page: Int): Request = buildSeriesRequest(page, sortBy = "latest_chapter")
 
-    override fun latestUpdatesParse(response: Response): MangasPage {
-        return searchMangaParse(response)
-    }
+    override fun latestUpdatesParse(response: Response): MangasPage = searchMangaParse(response)
 
     // ─── Helper pour construire les URLs /series ──────────────────────────────────
 
@@ -297,8 +281,10 @@ class PoseidonScans : HttpSource(), ConfigurableSource {
                                         '}' -> braceDepth++
                                         '{' -> {
                                             if (braceDepth == 0) {
-                                                objectStartIndex = i; break
-                                            }; braceDepth--
+                                                objectStartIndex = i
+                                                break
+                                            }
+                                            braceDepth--
                                         }
                                     }
                                 }
@@ -378,17 +364,27 @@ class PoseidonScans : HttpSource(), ConfigurableSource {
 
         for (i in startIndex until data.length) {
             val char = data[i]
-            if (escape) { escape = false; continue }
+            if (escape) {
+                escape = false
+                continue
+            }
             if (char == '\\' && inString) {
                 if (i + 1 < data.length && "\"\\/bfnrtu".contains(data[i + 1])) {
-                    escape = true; continue
+                    escape = true
+                    continue
                 }
             }
             if (char == '"') inString = !inString
             if (!inString) {
                 when (char) {
                     '{' -> braceBalance++
-                    '}' -> { braceBalance--; if (braceBalance == 0) { endIndex = i; break } }
+                    '}' -> {
+                        braceBalance--
+                        if (braceBalance == 0) {
+                            endIndex = i
+                            break
+                        }
+                    }
                 }
             }
             if (braceBalance < 0) return null
@@ -466,14 +462,12 @@ class PoseidonScans : HttpSource(), ConfigurableSource {
         }
     }
 
-    private fun parseStatus(statusString: String?): Int {
-        return when (statusString?.trim()?.lowercase(Locale.FRENCH)) {
-            "en cours" -> SManga.ONGOING
-            "terminé" -> SManga.COMPLETED
-            "en pause", "hiatus" -> SManga.ON_HIATUS
-            "annulé", "abandonné" -> SManga.CANCELLED
-            else -> SManga.UNKNOWN
-        }
+    private fun parseStatus(statusString: String?): Int = when (statusString?.trim()?.lowercase(Locale.FRENCH)) {
+        "en cours" -> SManga.ONGOING
+        "terminé" -> SManga.COMPLETED
+        "en pause", "hiatus" -> SManga.ON_HIATUS
+        "annulé", "abandonné" -> SManga.CANCELLED
+        else -> SManga.UNKNOWN
     }
 
     // ─── Liste des chapitres ──────────────────────────────────────────────────────
@@ -573,9 +567,7 @@ class PoseidonScans : HttpSource(), ConfigurableSource {
         return GET(page.imageUrl!!, imageHeaders)
     }
 
-    override fun imageUrlParse(response: Response): String {
-        throw UnsupportedOperationException("Not used.")
-    }
+    override fun imageUrlParse(response: Response): String = throw UnsupportedOperationException("Not used.")
 
     // ─── Filtres ──────────────────────────────────────────────────────────────────
 
@@ -590,16 +582,17 @@ class PoseidonScans : HttpSource(), ConfigurableSource {
         MaxChaptersFilter(),
     )
 
-    private class SortFilter : Filter.Select<String>(
-        "Tri",
-        arrayOf(
-            "Ajout Récent (Série)",
-            "Dernier Chapitre",
-            "Plus de chapitres",
-            "Popularité",
-            "Ordre alphabétique",
-        ),
-    ) {
+    private class SortFilter :
+        Filter.Select<String>(
+            "Tri",
+            arrayOf(
+                "Ajout Récent (Série)",
+                "Dernier Chapitre",
+                "Plus de chapitres",
+                "Popularité",
+                "Ordre alphabétique",
+            ),
+        ) {
         fun getValue() = when (state) {
             1 -> "latest_chapter"
             2 -> "most_chapters"
@@ -609,10 +602,11 @@ class PoseidonScans : HttpSource(), ConfigurableSource {
         }
     }
 
-    private class StatusFilter : Filter.Select<String>(
-        "Statut",
-        arrayOf("Tous", "En cours", "Terminé", "En pause", "Annulé"),
-    ) {
+    private class StatusFilter :
+        Filter.Select<String>(
+            "Statut",
+            arrayOf("Tous", "En cours", "Terminé", "En pause", "Annulé"),
+        ) {
         fun getValue() = when (state) {
             1 -> "en cours"
             2 -> "terminé"
@@ -623,47 +617,49 @@ class PoseidonScans : HttpSource(), ConfigurableSource {
     }
 
     private class TypeCheckBox(name: String) : Filter.CheckBox(name)
-    private class TypeFilter : Filter.Group<TypeCheckBox>(
-        "Type",
-        listOf(
-            TypeCheckBox("MANGA"),
-            TypeCheckBox("MANHUA"),
-            TypeCheckBox("MANHWA"),
-            TypeCheckBox("WEBTOON"),
-        ),
-    ) {
+    private class TypeFilter :
+        Filter.Group<TypeCheckBox>(
+            "Type",
+            listOf(
+                TypeCheckBox("MANGA"),
+                TypeCheckBox("MANHUA"),
+                TypeCheckBox("MANHWA"),
+                TypeCheckBox("WEBTOON"),
+            ),
+        ) {
         fun getValues() = state.filter { it.state }.map { it.name }
     }
 
     private class GenreCheckBox(name: String) : Filter.CheckBox(name)
-    private class GenreFilter : Filter.Group<GenreCheckBox>(
-        "Genres",
-        listOf(
-            GenreCheckBox("Délinquant"),
-            GenreCheckBox("Détective"),
-            GenreCheckBox("Drama"),
-            GenreCheckBox("Ecchi"),
-            GenreCheckBox("Fantaisie"),
-            GenreCheckBox("Fantastique"),
-            GenreCheckBox("Mystère"),
-            GenreCheckBox("Necromancer"),
-            GenreCheckBox("Portail/Donjon"),
-            GenreCheckBox("Psychologique"),
-            GenreCheckBox("Réincarnation"),
-            GenreCheckBox("Regression"),
-            GenreCheckBox("Romance"),
-            GenreCheckBox("Shojo"),
-            GenreCheckBox("Shonen"),
-            GenreCheckBox("Sports"),
-            GenreCheckBox("Super pouvoirs"),
-            GenreCheckBox("Surnaturel"),
-            GenreCheckBox("Systeme"),
-            GenreCheckBox("Tour"),
-            GenreCheckBox("Tragique"),
-            GenreCheckBox("Vengeance"),
-            GenreCheckBox("Vie scolaire"),
-        ),
-    ) {
+    private class GenreFilter :
+        Filter.Group<GenreCheckBox>(
+            "Genres",
+            listOf(
+                GenreCheckBox("Délinquant"),
+                GenreCheckBox("Détective"),
+                GenreCheckBox("Drama"),
+                GenreCheckBox("Ecchi"),
+                GenreCheckBox("Fantaisie"),
+                GenreCheckBox("Fantastique"),
+                GenreCheckBox("Mystère"),
+                GenreCheckBox("Necromancer"),
+                GenreCheckBox("Portail/Donjon"),
+                GenreCheckBox("Psychologique"),
+                GenreCheckBox("Réincarnation"),
+                GenreCheckBox("Regression"),
+                GenreCheckBox("Romance"),
+                GenreCheckBox("Shojo"),
+                GenreCheckBox("Shonen"),
+                GenreCheckBox("Sports"),
+                GenreCheckBox("Super pouvoirs"),
+                GenreCheckBox("Surnaturel"),
+                GenreCheckBox("Systeme"),
+                GenreCheckBox("Tour"),
+                GenreCheckBox("Tragique"),
+                GenreCheckBox("Vengeance"),
+                GenreCheckBox("Vie scolaire"),
+            ),
+        ) {
         fun getValues() = state.filter { it.state }.map { it.name }
     }
 

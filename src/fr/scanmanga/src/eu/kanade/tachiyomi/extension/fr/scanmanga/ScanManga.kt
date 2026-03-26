@@ -28,7 +28,9 @@ import uy.kohesive.injekt.Injekt
 import uy.kohesive.injekt.api.get
 import java.util.zip.Inflater
 
-class ScanManga : HttpSource(), ConfigurableSource {
+class ScanManga :
+    HttpSource(),
+    ConfigurableSource {
     override val name = "Scan-Manga"
 
     override val baseUrl = "https://m.scan-manga.com"
@@ -58,11 +60,9 @@ class ScanManga : HttpSource(), ConfigurableSource {
         "Mozilla/5.0 (Linux; Android 14; SM-A556B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.6668.69 Mobile Safari/537.36",
     )
 
-    private fun getUserAgentMode(): String =
-        preferences.getString("pref_useragent_mode", "default") ?: "default"
+    private fun getUserAgentMode(): String = preferences.getString("pref_useragent_mode", "default") ?: "default"
 
-    private fun getCustomUserAgent(): String =
-        preferences.getString("pref_custom_useragent", "") ?: ""
+    private fun getCustomUserAgent(): String = preferences.getString("pref_custom_useragent", "") ?: ""
 
     private fun getRotatingUserAgent(): String {
         val hourOfDay = (System.currentTimeMillis() / (1000 * 60 * 60)) % rotatingUserAgents.size
@@ -156,8 +156,7 @@ class ScanManga : HttpSource(), ConfigurableSource {
     // POPULAR
     // ─────────────────────────────────────────────────────────────
 
-    override fun popularMangaRequest(page: Int): Request =
-        GET("$baseUrl/TOP-Manga-Webtoon-36.html", headers)
+    override fun popularMangaRequest(page: Int): Request = GET("$baseUrl/TOP-Manga-Webtoon-36.html", headers)
 
     override fun popularMangaParse(response: Response): MangasPage {
         val mangas = response.asJsoup().select("#carouselTOPContainer > div.top").map { element ->

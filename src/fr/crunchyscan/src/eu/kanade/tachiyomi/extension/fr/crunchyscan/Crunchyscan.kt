@@ -104,9 +104,7 @@ class Crunchyscan : HttpSource() {
         return POST("$baseUrl/api/manga/search/advance", headersWithCsrf(), formBody)
     }
 
-    override fun latestUpdatesParse(response: Response): MangasPage {
-        return popularMangaParse(response)
-    }
+    override fun latestUpdatesParse(response: Response): MangasPage = popularMangaParse(response)
 
     // ============================================
     // SEARCH
@@ -121,17 +119,13 @@ class Crunchyscan : HttpSource() {
         return POST("$baseUrl/api/manga/search/advance", headersWithCsrf(), formBody)
     }
 
-    override fun searchMangaParse(response: Response): MangasPage {
-        return popularMangaParse(response)
-    }
+    override fun searchMangaParse(response: Response): MangasPage = popularMangaParse(response)
 
     // ============================================
     // MANGA DETAILS
     // ============================================
 
-    override fun mangaDetailsRequest(manga: SManga): Request {
-        return GET(baseUrl + manga.url, headers)
-    }
+    override fun mangaDetailsRequest(manga: SManga): Request = GET(baseUrl + manga.url, headers)
 
     override fun mangaDetailsParse(response: Response): SManga {
         val document = Jsoup.parse(response.body?.string() ?: "")
@@ -167,9 +161,7 @@ class Crunchyscan : HttpSource() {
     // CHAPTER LIST
     // ============================================
 
-    override fun chapterListRequest(manga: SManga): Request {
-        return GET(baseUrl + manga.url, headers)
-    }
+    override fun chapterListRequest(manga: SManga): Request = GET(baseUrl + manga.url, headers)
 
     override fun chapterListParse(response: Response): List<SChapter> {
         val document = Jsoup.parse(response.body.string())
@@ -238,9 +230,7 @@ class Crunchyscan : HttpSource() {
     // PAGE LIST — DÉCRYPTAGE des images
     // ============================================
 
-    override fun pageListRequest(chapter: SChapter): Request {
-        return GET(baseUrl + chapter.url, headers)
-    }
+    override fun pageListRequest(chapter: SChapter): Request = GET(baseUrl + chapter.url, headers)
 
     override fun pageListParse(response: Response): List<Page> {
         val html = response.body?.string() ?: return emptyList()
@@ -258,9 +248,7 @@ class Crunchyscan : HttpSource() {
         }
     }
 
-    override fun imageUrlParse(response: Response): String {
-        throw UnsupportedOperationException("Not used")
-    }
+    override fun imageUrlParse(response: Response): String = throw UnsupportedOperationException("Not used")
 
     override fun imageRequest(page: Page): Request {
         var imageUrl = page.imageUrl ?: ""

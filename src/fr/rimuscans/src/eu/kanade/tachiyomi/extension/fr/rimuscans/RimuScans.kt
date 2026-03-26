@@ -20,7 +20,9 @@ import okhttp3.Request
 import okhttp3.Response
 import java.util.concurrent.TimeUnit
 
-class RimuScans : HttpSource(), ConfigurableSource {
+class RimuScans :
+    HttpSource(),
+    ConfigurableSource {
 
     override val name = "RimuScans"
     override val lang = "fr"
@@ -59,11 +61,9 @@ class RimuScans : HttpSource(), ConfigurableSource {
        Popular / Latest / Search
        ========================= */
 
-    override fun popularMangaRequest(page: Int): Request =
-        GET("$internalBaseUrl/api/manga?page=$page&limit=24&sortBy=views", headers)
+    override fun popularMangaRequest(page: Int): Request = GET("$internalBaseUrl/api/manga?page=$page&limit=24&sortBy=views", headers)
 
-    override fun latestUpdatesRequest(page: Int): Request =
-        GET("$internalBaseUrl/api/manga?page=$page&limit=24&sortBy=latest", headers)
+    override fun latestUpdatesRequest(page: Int): Request = GET("$internalBaseUrl/api/manga?page=$page&limit=24&sortBy=latest", headers)
 
     override fun searchMangaRequest(page: Int, query: String, filters: FilterList): Request {
         lastSearchQuery = query
@@ -186,8 +186,7 @@ class RimuScans : HttpSource(), ConfigurableSource {
        Manga details
        ========================= */
 
-    override fun mangaDetailsRequest(manga: SManga): Request =
-        GET("$internalBaseUrl${manga.url}", headers)
+    override fun mangaDetailsRequest(manga: SManga): Request = GET("$internalBaseUrl${manga.url}", headers)
 
     override fun mangaDetailsParse(response: Response): SManga {
         val document = org.jsoup.Jsoup.parse(response.body.string())
@@ -202,8 +201,7 @@ class RimuScans : HttpSource(), ConfigurableSource {
        Chapter list
        ========================= */
 
-    override fun chapterListRequest(manga: SManga): Request =
-        GET("$internalBaseUrl${manga.url}", headers)
+    override fun chapterListRequest(manga: SManga): Request = GET("$internalBaseUrl${manga.url}", headers)
 
     override fun chapterListParse(response: Response): List<SChapter> {
         val slug =
@@ -243,8 +241,7 @@ class RimuScans : HttpSource(), ConfigurableSource {
        Page list
        ========================= */
 
-    override fun pageListRequest(chapter: SChapter): Request =
-        GET("$internalBaseUrl${chapter.url}", headers)
+    override fun pageListRequest(chapter: SChapter): Request = GET("$internalBaseUrl${chapter.url}", headers)
 
     override fun pageListParse(response: Response): List<Page> {
         return try {
@@ -278,68 +275,72 @@ class RimuScans : HttpSource(), ConfigurableSource {
         GenreFilter(),
     )
 
-    private class TypeFilter : Filter.Select<String>(
-        "Type",
-        arrayOf("Tous", "Manga", "Manhwa"),
-    )
+    private class TypeFilter :
+        Filter.Select<String>(
+            "Type",
+            arrayOf("Tous", "Manga", "Manhwa"),
+        )
 
-    private class StatusFilter : Filter.Select<String>(
-        "Statut",
-        arrayOf("Tous", "En Cours", "Terminé", "En Pause"),
-    )
+    private class StatusFilter :
+        Filter.Select<String>(
+            "Statut",
+            arrayOf("Tous", "En Cours", "Terminé", "En Pause"),
+        )
 
-    private class MinChaptersFilter : Filter.Select<String>(
-        "Chapitres minimum",
-        arrayOf("Tous", "10+", "25+", "50+", "100+"),
-    )
+    private class MinChaptersFilter :
+        Filter.Select<String>(
+            "Chapitres minimum",
+            arrayOf("Tous", "10+", "25+", "50+", "100+"),
+        )
 
-    private class GenreFilter : Filter.Group<GenreCheckbox>(
-        "Genres",
-        listOf(
-            GenreCheckbox("Action"),
-            GenreCheckbox("Arts Martiaux"),
-            GenreCheckbox("Assassin"),
-            GenreCheckbox("Aventure"),
-            GenreCheckbox("Combat"),
-            GenreCheckbox("Comedie"),
-            GenreCheckbox("Dieu"),
-            GenreCheckbox("Drame"),
-            GenreCheckbox("Ecchi"),
-            GenreCheckbox("Fantaisie"),
-            GenreCheckbox("Fantastique"),
-            GenreCheckbox("Fantasy"),
-            GenreCheckbox("Gender Bender"),
-            GenreCheckbox("Harem"),
-            GenreCheckbox("Historical"),
-            GenreCheckbox("Historique"),
-            GenreCheckbox("Horreur"),
-            GenreCheckbox("Humour"),
-            GenreCheckbox("Isekai"),
-            GenreCheckbox("Josei"),
-            GenreCheckbox("Magie"),
-            GenreCheckbox("Martial Arts"),
-            GenreCheckbox("Mature"),
-            GenreCheckbox("Mecha"),
-            GenreCheckbox("Murim"),
-            GenreCheckbox("Mystere"),
-            GenreCheckbox("Regression"),
-            GenreCheckbox("Romance"),
-            GenreCheckbox("Royauté"),
-            GenreCheckbox("Réincarnation"),
-            GenreCheckbox("Sci-Fi"),
-            GenreCheckbox("Shônen"),
-            GenreCheckbox("Slice of Life"),
-            GenreCheckbox("Super Pouvoir"),
-            GenreCheckbox("Surnaturel"),
-            GenreCheckbox("Thriller"),
-            GenreCheckbox("Tragédie"),
-            GenreCheckbox("Vampire"),
-            GenreCheckbox("Vengeance"),
-            GenreCheckbox("Voyage Temporel"),
-            GenreCheckbox("Wuxia"),
-            GenreCheckbox("Yakuza"),
-        ),
-    )
+    private class GenreFilter :
+        Filter.Group<GenreCheckbox>(
+            "Genres",
+            listOf(
+                GenreCheckbox("Action"),
+                GenreCheckbox("Arts Martiaux"),
+                GenreCheckbox("Assassin"),
+                GenreCheckbox("Aventure"),
+                GenreCheckbox("Combat"),
+                GenreCheckbox("Comedie"),
+                GenreCheckbox("Dieu"),
+                GenreCheckbox("Drame"),
+                GenreCheckbox("Ecchi"),
+                GenreCheckbox("Fantaisie"),
+                GenreCheckbox("Fantastique"),
+                GenreCheckbox("Fantasy"),
+                GenreCheckbox("Gender Bender"),
+                GenreCheckbox("Harem"),
+                GenreCheckbox("Historical"),
+                GenreCheckbox("Historique"),
+                GenreCheckbox("Horreur"),
+                GenreCheckbox("Humour"),
+                GenreCheckbox("Isekai"),
+                GenreCheckbox("Josei"),
+                GenreCheckbox("Magie"),
+                GenreCheckbox("Martial Arts"),
+                GenreCheckbox("Mature"),
+                GenreCheckbox("Mecha"),
+                GenreCheckbox("Murim"),
+                GenreCheckbox("Mystere"),
+                GenreCheckbox("Regression"),
+                GenreCheckbox("Romance"),
+                GenreCheckbox("Royauté"),
+                GenreCheckbox("Réincarnation"),
+                GenreCheckbox("Sci-Fi"),
+                GenreCheckbox("Shônen"),
+                GenreCheckbox("Slice of Life"),
+                GenreCheckbox("Super Pouvoir"),
+                GenreCheckbox("Surnaturel"),
+                GenreCheckbox("Thriller"),
+                GenreCheckbox("Tragédie"),
+                GenreCheckbox("Vampire"),
+                GenreCheckbox("Vengeance"),
+                GenreCheckbox("Voyage Temporel"),
+                GenreCheckbox("Wuxia"),
+                GenreCheckbox("Yakuza"),
+            ),
+        )
 
     private class GenreCheckbox(name: String) : Filter.CheckBox(name)
 
