@@ -288,7 +288,7 @@ class ScanManga :
                     s = s.replace(alphabetStr[j].toString(), j.toString())
                 }
                 val number = s.toLongOrNull(base) ?: continue
-                append((number - subtractVal).toChar())
+                append((number - subtractVal).toInt().toChar())
             }
         }
     }
