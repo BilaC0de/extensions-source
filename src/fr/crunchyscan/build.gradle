@@ -1,0 +1,8 @@
+ext {
+    extName = 'Crunchy-Scan'
+    extClass = '.Crunchyscan'
+    extVersionCode = 1
+    isNsfw = true
+}
+
+apply from: "$rootDir/common.gradle"

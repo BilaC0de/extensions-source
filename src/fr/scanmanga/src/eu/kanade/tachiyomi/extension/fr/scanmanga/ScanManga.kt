@@ -1,13 +1,10 @@
 package eu.kanade.tachiyomi.extension.fr.scanmanga
 
-import android.annotation.SuppressLint
-import android.app.Application
-import android.os.Handler
-import android.os.Looper
+import android.content.SharedPreferences
 import android.util.Base64
-import android.webkit.WebView
-import android.webkit.WebViewClient
+import android.util.Log
 import androidx.preference.EditTextPreference
+import androidx.preference.ListPreference
 import androidx.preference.PreferenceScreen
 import eu.kanade.tachiyomi.network.GET
 import eu.kanade.tachiyomi.network.POST
@@ -19,7 +16,6 @@ import eu.kanade.tachiyomi.source.model.SChapter
 import eu.kanade.tachiyomi.source.model.SManga
 import eu.kanade.tachiyomi.source.online.HttpSource
 import eu.kanade.tachiyomi.util.asJsoup
-import keiyoushi.utils.getPreferencesLazy
 import keiyoushi.utils.parseAs
 import okhttp3.CookieJar
 import okhttp3.Headers
@@ -30,127 +26,186 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
 import uy.kohesive.injekt.Injekt
 import uy.kohesive.injekt.api.get
-import java.util.concurrent.CountDownLatch
-import java.util.concurrent.TimeUnit
 import java.util.zip.Inflater
 
-class ScanManga :
-    HttpSource(),
-    ConfigurableSource {
+class ScanManga : HttpSource(), ConfigurableSource {
     override val name = "Scan-Manga"
 
     override val baseUrl = "https://m.scan-manga.com"
+    private val wwwBaseUrl = "https://www.scan-manga.com"
     private val baseImageUrl = "https://static.scan-manga.com/img/manga"
 
     override val lang = "fr"
-
     override val supportsLatest = true
 
-    protected val preferences by getPreferencesLazy()
-
-    override val client = super.client.newBuilder()
-        .addNetworkInterceptor { chain ->
-            val originalRequest = chain.request()
-            val header = originalRequest.header("X-Requested-With")
-            if (header != null && header.isEmpty()) {
-                return@addNetworkInterceptor chain.proceed(
-                    originalRequest.newBuilder()
-                        .removeHeader("X-Requested-With")
-                        .build(),
-                )
-            }
-            return@addNetworkInterceptor chain.proceed(originalRequest)
-        }
-        .build()
-
-    override fun headersBuilder(): Headers.Builder {
-        val currentChromeVersion = super.headersBuilder().build().get("User-Agent")?.let {
-            Regex("Chrome/(\\d+)").find(it)?.groupValues?.get(1)?.toIntOrNull()
-        } ?: 145
-
-        return Headers.Builder()
-//            .add(
-//                "sec-ch-ua",
-//                "\"Not:A-Brand\";v=\"99\", \"Google Chrome\";v=\"$currentChromeVersion\", \"Chromium\";v=\"$currentChromeVersion\"",
-//            )
-//            .add("sec-ch-ua-mobile", "?1")
-//            .add("sec-ch-ua-platform", "\"Android\"")
-            .add("upgrade-insecure-requests", "1")
-            .add(
-                "user-agent",
-                "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/$currentChromeVersion.0.0.0 Mobile Safari/537.36",
-            )
-            .add(
-                "accept",
-                "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
-            )
-            .add("sec-fetch-site", "none")
-//            .add("sec-fetch-mode", "navigate")
-//            .add("sec-fetch-user", "?1")
-//            .add("sec-fetch-dest", "document")
-            .add("accept-language", "fr-FR,fr;q=0.9,en-US;q=0.8,en;q=0.7")
-//            .add("priority", "u=0, i")
-            .add("X-Requested-With", "")
+    private val preferences: SharedPreferences by lazy {
+        Injekt.get<android.app.Application>().getSharedPreferences("source_$id", 0x0000)
     }
 
-    // Popular
-    override fun popularMangaRequest(page: Int): Request = GET("$baseUrl/TOP-Manga-Webtoon-45.html", headers)
+    companion object {
+        private const val TAG = "ScanManga"
+    }
+
+    private val rotatingUserAgents = listOf(
+        // 2024-2025 — Chrome récent sur appareils modernes
+        "Mozilla/5.0 (Linux; Android 14; SM-S928B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.6778.135 Mobile Safari/537.36",
+        "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.6723.102 Mobile Safari/537.36",
+        "Mozilla/5.0 (Linux; Android 13; CPH2609) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.6668.100 Mobile Safari/537.36",
+        "Mozilla/5.0 (Linux; Android 14; 2312DRA50G) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.6613.127 Mobile Safari/537.36",
+        "Mozilla/5.0 (Linux; Android 14; SM-S911B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.6778.200 Mobile Safari/537.36",
+        "Mozilla/5.0 (Linux; Android 13; Pixel 7a) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.6723.86 Mobile Safari/537.36",
+        "Mozilla/5.0 (Linux; Android 14; Pixel 8 Pro) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.6778.260 Mobile Safari/537.36",
+        "Mozilla/5.0 (Linux; Android 14; SM-A556B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.6668.69 Mobile Safari/537.36",
+    )
+
+    private fun getUserAgentMode(): String =
+        preferences.getString("pref_useragent_mode", "default") ?: "default"
+
+    private fun getCustomUserAgent(): String =
+        preferences.getString("pref_custom_useragent", "") ?: ""
+
+    private fun getRotatingUserAgent(): String {
+        val hourOfDay = (System.currentTimeMillis() / (1000 * 60 * 60)) % rotatingUserAgents.size
+        return rotatingUserAgents[hourOfDay.toInt()]
+    }
+
+    override fun headersBuilder(): Headers.Builder {
+        val builder =
+            super.headersBuilder().add("Accept-Language", "fr-FR,fr;q=0.9,en-US;q=0.8,en;q=0.7")
+        when (getUserAgentMode()) {
+            "custom" -> {
+                val custom = getCustomUserAgent()
+                if (custom.isNotBlank()) builder.set("User-Agent", custom)
+            }
+
+            "rotating" -> builder.set("User-Agent", getRotatingUserAgent())
+        }
+        return builder
+    }
+
+    override fun setupPreferenceScreen(screen: PreferenceScreen) {
+        val userAgentModePref = ListPreference(screen.context).apply {
+            key = "pref_useragent_mode"
+            title = "Mode User-Agent"
+            summary = "Choisir comment gérer le User-Agent"
+            entries = arrayOf("Par défaut (Mihon)", "Personnalisé", "Rotatif automatique")
+            entryValues = arrayOf("default", "custom", "rotating")
+            setDefaultValue("default")
+        }
+        screen.addPreference(userAgentModePref)
+
+        val customUserAgentPref = EditTextPreference(screen.context).apply {
+            key = "pref_custom_useragent"
+            title = "User-Agent personnalisé"
+            summary = "Utilisé seulement si mode 'Personnalisé' est sélectionné"
+            dialogTitle = "User-Agent personnalisé"
+            dialogMessage =
+                "Exemple : Mozilla/5.0 (Linux; Android 11; SM-G991B) AppleWebKit/537.36..."
+            setDefaultValue("")
+        }
+        screen.addPreference(customUserAgentPref)
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // COVERS VIA API BQJ
+    // ─────────────────────────────────────────────────────────────
+
+    private fun fetchCoverViaBqj(mangaUrl: String): String? {
+        return try {
+            val segment = mangaUrl.trimStart('/').substringBefore('/')
+            // "10834-28941" → on coupe au tiret → on prend "10834"
+            val mangaId = segment.substringBefore('-').toLongOrNull() ?: run {
+                Log.w(TAG, "Impossible d'extraire l'ID depuis : $segment")
+                return null
+            }
+
+            val jsonUrl = "https://bqj.scan-manga.com/popmanga_$mangaId.json"
+            val raw = client.newCall(GET(jsonUrl, headers)).execute().use { it.body.string() }
+            val array = org.json.JSONArray(raw)
+
+            val filename = array.optString(5, "")
+            if (filename.isNotBlank()) {
+                "$baseImageUrl/$filename"
+            } else {
+                Log.w(TAG, "Nom d'image vide pour ID $mangaId")
+                null
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "fetchCoverViaBqj failed pour $mangaUrl", e)
+            null
+        }
+    }
+
+    private fun loadCovers(mangas: List<SManga>) {
+        val executor = java.util.concurrent.Executors.newFixedThreadPool(3)
+        mangas.forEachIndexed { index, manga ->
+            executor.submit {
+                try {
+                    if (index > 0) Thread.sleep((index % 3) * 150L)
+                    manga.thumbnail_url = fetchCoverViaBqj(manga.url)
+                } catch (e: Exception) {
+                    Log.w(TAG, "loadCovers failed pour ${manga.url}", e)
+                }
+            }
+        }
+        executor.shutdown()
+        executor.awaitTermination(30, java.util.concurrent.TimeUnit.SECONDS)
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // POPULAR
+    // ─────────────────────────────────────────────────────────────
+
+    override fun popularMangaRequest(page: Int): Request =
+        GET("$baseUrl/TOP-Manga-Webtoon-36.html", headers)
 
     override fun popularMangaParse(response: Response): MangasPage {
         val mangas = response.asJsoup().select("#carouselTOPContainer > div.top").map { element ->
+            val titleElement = element.selectFirst("a.atop")!!
             SManga.create().apply {
-                val titleElement = element.selectFirst("a.atop")!!
-
                 title = titleElement.text()
                 setUrlWithoutDomain(titleElement.attr("href"))
-                thumbnail_url = element.selectFirst("img")?.attr("data-original")
+                thumbnail_url = null
             }
         }
-
+        loadCovers(mangas)
         return MangasPage(mangas, false)
     }
 
-    // Latest
+    // ─────────────────────────────────────────────────────────────
+    // LATEST UPDATES
+    // ─────────────────────────────────────────────────────────────
+
     override fun latestUpdatesRequest(page: Int): Request = GET(baseUrl, headers)
 
     override fun latestUpdatesParse(response: Response): MangasPage {
-        val document = response.asJsoup()
-
-        val mangas = document.select("#content_news .publi").map { element ->
+        val mangas = response.asJsoup().select("#content_news .publi").map { element ->
+            val mangaElement = element.selectFirst("a.l_manga")!!
             SManga.create().apply {
-                val mangaElement = element.selectFirst("a.l_manga")!!
-
                 title = mangaElement.text()
                 setUrlWithoutDomain(mangaElement.attr("href"))
-
-                thumbnail_url = element.selectFirst("img")?.attr("src")
+                thumbnail_url = null
             }
         }
-
+        loadCovers(mangas)
         return MangasPage(mangas, false)
     }
 
-    // Search
+    // ─────────────────────────────────────────────────────────────
+    // SEARCH
+    // ─────────────────────────────────────────────────────────────
+
     override fun searchMangaRequest(page: Int, query: String, filters: FilterList): Request {
-        val url = "$baseUrl/api/search/quick.json"
-            .toHttpUrl().newBuilder()
-            .addQueryParameter("term", query)
-            .build()
-            .toString()
-
-        val newHeaders = headers.newBuilder()
-            .add("Content-type", "application/json; charset=UTF-8")
-            .build()
-
+        val url = "$baseUrl/api/search/quick.json".toHttpUrl().newBuilder()
+            .addQueryParameter("term", query).build().toString()
+        val newHeaders =
+            headers.newBuilder().add("Content-type", "application/json; charset=UTF-8").build()
         return GET(url, newHeaders)
     }
 
     override fun searchMangaParse(response: Response): MangasPage {
         val json = response.body.string()
-        if (json == "[]") {
-            return MangasPage(emptyList(), false)
-        }
-
+        if (json == "[]") return MangasPage(emptyList(), false)
         return MangasPage(
             json.parseAs<MangaSearchDto>().title?.map {
                 SManga.create().apply {
@@ -163,227 +218,211 @@ class ScanManga :
         )
     }
 
-    // Details
+    // ─────────────────────────────────────────────────────────────
+    // MANGA DETAILS
+    // ─────────────────────────────────────────────────────────────
+
     override fun mangaDetailsParse(response: Response): SManga {
         val document = response.asJsoup()
-
         return SManga.create().apply {
             title = document.select("h1.main_title[itemprop=name]").text()
             author = document.select("div[itemprop=author]").text()
             description = document.selectFirst("div.titres_desc[itemprop=description]")?.text()
             genre = document.selectFirst("div.titres_souspart span[itemprop=genre]")?.text()
-
             val statutText = document.selectFirst("div.titres_souspart")?.ownText()
             status = when {
                 statutText?.contains("En cours", ignoreCase = true) == true -> SManga.ONGOING
                 statutText?.contains("Terminé", ignoreCase = true) == true -> SManga.COMPLETED
                 else -> SManga.UNKNOWN
             }
-
             thumbnail_url = document.select("div.full_img_serie img[itemprop=image]").attr("src")
         }
     }
 
-    // Chapters
+    // ─────────────────────────────────────────────────────────────
+    // CHAPTER LIST
+    // ─────────────────────────────────────────────────────────────
+
     override fun chapterListParse(response: Response): List<SChapter> {
         val document = response.asJsoup()
         return document.select("div.chapt_m").map { element ->
             val linkEl = element.selectFirst("td.publimg span.i a")!!
             val titleEl = element.selectFirst("td.publititle")
-
             val chapterName = linkEl.text()
             val extraTitle = titleEl?.text()
-
             SChapter.create().apply {
-                name = if (!extraTitle.isNullOrEmpty()) "$chapterName - $extraTitle" else chapterName
+                name =
+                    if (!extraTitle.isNullOrEmpty()) "$chapterName - $extraTitle" else chapterName
                 setUrlWithoutDomain(linkEl.absUrl("href"))
             }
         }
     }
 
-    // Pages
-    private fun decodeHunter(obfuscatedJs: String): String {
-        val regex = Regex("""eval\(function\(\w,\w,\w,\w,\w,\w\)\{.*?\}\("([^"]+)",\d+,"([^"]+)",(\d+),(\d+),\d+\)\)""")
-        val (encoded, mask, intervalStr, optionStr) = regex.find(obfuscatedJs)?.destructured
-            ?: error("Failed to match obfuscation pattern: $obfuscatedJs")
+    // ─────────────────────────────────────────────────────────────
+    // PAGE LIST — NOUVEAU SYSTÈME DE DÉCHIFFREMENT (m,w,b,u,v,h)
+    // Le site a remplacé l'ancien système (h,u,n,t,e,r) par un
+    // nouveau format. Cette fonction gère le nouveau format.
+    // ─────────────────────────────────────────────────────────────
 
-        val interval = intervalStr.toInt()
-        val option = optionStr.toInt()
-        val delimiter = mask[option]
-        val tokens = encoded.split(delimiter).filter { it.isNotEmpty() }
-        val reversedMap = mask.withIndex().associate { it.value to it.index }
+    private fun decodeNewStyle(obfuscatedJs: String): String {
+        // Accepte n'importe quel nom de variable : (m,w,b,u,v,h) ou (l,y,d,m,e,r,z) etc.
+        // Le site change les noms régulièrement mais la logique reste identique :
+        // eval(function(X,X,X,X,X,X,...){ ... }("données",nb,"alphabet",soustraction,base,...))
+        val regex = Regex(
+            """eval\(function\((?:[a-z],){5}[a-z](?:,[a-z])?\)\{[\s\S]*?\}\("([^"]+)",\d+,"([^"]+)",(\d+),(\d+),\d+(?:,\d+)?\)\)""",
+        )
+        val match = regex.find(obfuscatedJs) ?: error("Aucun script obfusqué trouvé")
+
+        val encoded = match.groupValues[1] // les données chiffrées
+        val alphabetStr = match.groupValues[2] // l'alphabet/masque
+        val subtractVal = match.groupValues[3].toLong() // valeur à soustraire
+        val base = match.groupValues[4].toInt() // base ET index du séparateur
+
+        // Le séparateur est le caractère à la position [base] dans l'alphabet
+        val delimiter = alphabetStr[base]
 
         return buildString {
-            for (token in tokens) {
-                // Reverse the hashIt() operation: convert masked characters back to digits
-                val digitString = token.map { c ->
-                    reversedMap[c]?.toString() ?: error("Invalid masked character: $c")
-                }.joinToString("")
-
-                // Convert from base `option` to decimal
-                val number = digitString.toIntOrNull(option)
-                    ?: error("Failed to parse token: $digitString as base $option")
-
-                // Reverse the shift done during encodeIt()
-                val originalCharCode = number - interval
-
-                append(originalCharCode.toChar())
+            for (token in encoded.split(delimiter)) {
+                if (token.isEmpty()) continue
+                var s = token
+                for (j in alphabetStr.indices) {
+                    s = s.replace(alphabetStr[j].toString(), j.toString())
+                }
+                val number = s.toLongOrNull(base) ?: continue
+                append((number - subtractVal).toChar())
             }
         }
     }
 
-    private val multipleSpaces = Regex("""\s+""")
-
     private fun dataAPI(data: String, idc: Int): UrlPayload {
-        if (data.contains("error")) {
-            error("Received error response from data API: ${multipleSpaces.replace(data, " ").trim()}")
+        try {
+            val compressedBytes = Base64.decode(data, Base64.DEFAULT)
+            var inflated: String? = null
+            try {
+                val inf = Inflater(false)
+                inf.setInput(compressedBytes)
+                val out = java.io.ByteArrayOutputStream()
+                val buf = ByteArray(1024)
+                while (!inf.finished()) {
+                    val c = inf.inflate(buf)
+                    if (c == 0 && inf.needsInput()) break
+                    out.write(buf, 0, c)
+                }
+                inf.end()
+                inflated = out.toString("UTF-8")
+            } catch (e: Exception) {
+                try {
+                    val inf = Inflater(true)
+                    inf.setInput(compressedBytes)
+                    val out = java.io.ByteArrayOutputStream()
+                    val buf = ByteArray(1024)
+                    while (!inf.finished()) {
+                        val c = inf.inflate(buf)
+                        if (c == 0 && inf.needsInput()) break
+                        out.write(buf, 0, c)
+                    }
+                    inf.end()
+                    inflated = out.toString("UTF-8")
+                } catch (e2: Exception) {
+                    Log.e(TAG, "Both inflate failed", e2)
+                    throw e2
+                }
+            }
+            if (inflated == null) throw Exception("Decompression failed")
+            val hex = idc.toString(16)
+            val clean = inflated.removeSuffix(hex)
+            val rev = clean.reversed()
+            val padding = (4 - rev.length % 4) % 4
+            val revPadded = rev + "=".repeat(padding)
+            val json = String(Base64.decode(revPadded, Base64.DEFAULT), Charsets.UTF_8)
+            Log.d(TAG, "✓ Final JSON: $json")
+            return json.parseAs<UrlPayload>()
+        } catch (e: Exception) {
+            Log.e(TAG, "dataAPI FAILED", e)
+            throw e
         }
-
-        // Step 1: Base64 decode the input
-        val compressedBytes = Base64.decode(data, Base64.NO_WRAP or Base64.NO_PADDING)
-
-        // Step 2: Inflate (zlib decompress)
-        val inflater = Inflater()
-        inflater.setInput(compressedBytes)
-        val outputBuffer = ByteArray(512 * 1024) // 512 KB buffer, should be more than enough
-        val decompressedLength = inflater.inflate(outputBuffer)
-        inflater.end()
-
-        val inflated = String(outputBuffer, 0, decompressedLength)
-
-        // Step 3: Remove trailing hex string and reverse
-        val hexIdc = idc.toString(16)
-        val cleaned = inflated.removeSuffix(hexIdc)
-        val reversed = cleaned.reversed()
-
-        // Step 4: Base64 decode and parse JSON
-        val finalJsonStr = String(Base64.decode(reversed, Base64.DEFAULT))
-
-        return finalJsonStr.parseAs<UrlPayload>()
     }
 
     override fun pageListParse(response: Response): List<Page> {
         val document = response.asJsoup()
-        val packedScript = document.selectFirst("script:containsData(eval\\(function\\()")!!.data()
 
-        val unpackedScript = decodeHunter(packedScript)
-        val parametersRegex = Regex("""sml = '([^']+)';\n?.*var sme = '([^']+)'""")
+        // idc est maintenant visible en clair dans la page
+        // ex : "const idc = 521690;"
+        val chapterId = document.select("script").mapNotNull { script ->
+            Regex("""const idc\s*=\s*(\d+)""").find(script.data())?.groupValues?.get(1)
+        }.firstOrNull() ?: error("Impossible de trouver l'ID du chapitre (idc)")
 
-        val (sml, sme) = parametersRegex.find(unpackedScript)?.destructured
-            ?: error("Failed to extract parameters from script.")
+        // sml et sme sont cachés dans les scripts chiffrés (m,w,b,u,v,h)
+        val parametersRegex = Regex("""sml\s*=\s*'([^']+)'[\s\S]*?var sme\s*=\s*'([^']+)'""")
+        var sml: String? = null
+        var sme: String? = null
 
-        val chapterInfoRegex = Regex("""const idc = (\d+)""")
-        val (chapterId) = chapterInfoRegex.find(packedScript)?.destructured
-            ?: error("Failed to extract chapter ID.")
+        // Cherche dans tous les scripts qui contiennent un eval obfusqué
+        // On cherche "eval(function(" au lieu des noms de variables qui changent à chaque fois
+        for (script in document.select("script").toList()
+            .filter { "eval(function(" in it.data() }) {
+            try {
+                val decoded = decodeNewStyle(script.data())
+                val match = parametersRegex.find(decoded) ?: continue
+                sml = match.groupValues[1]
+                sme = match.groupValues[2]
+                Log.d(TAG, "✓ sml et sme trouvés dans le script déchiffré")
+                break
+            } catch (e: Exception) {
+                Log.w(TAG, "Échec décodage d'un script, essai du suivant...", e)
+            }
+        }
+
+        if (sml == null || sme == null) {
+            error("Impossible d'extraire sml/sme — le site a peut-être encore changé son format")
+        }
+
+        val chapterPath = response.request.url.encodedPath
+        val chapterSourceUrl = "$wwwBaseUrl$chapterPath"
+
+        Log.d(TAG, "Chapter ID: $chapterId | sml: $sml | sme: $sme")
 
         val mediaType = "application/json; charset=UTF-8".toMediaType()
-        val requestBody = """{"a":"$sme","b":"$sml","c":"${getFingerprint()}"}"""
+        val requestBody = """{"a":"$sme","b":"$sml"}"""
+        val apiUrl = "https://bqj.scan-manga.com/lel/$chapterId.json"
 
-        val documentUrl = document.baseUri().toHttpUrl()
+        Log.d(TAG, "POST $apiUrl | source: $chapterSourceUrl | body: $requestBody")
 
         val pageListRequest = POST(
-            "https://bqj.${baseUrl.toHttpUrl().topPrivateDomain()}/lel/$chapterId.json",
-            headers.newBuilder()
-                .add("Origin", "${documentUrl.scheme}://${documentUrl.host}")
-                .add("Referer", documentUrl.toString())
-                .add("Token", "yf")
-                .build(),
+            apiUrl,
+            headers.newBuilder().set("Accept", "*/*").set("Origin", wwwBaseUrl)
+                .set("Referer", "$wwwBaseUrl/").add("source", chapterSourceUrl).add("Token", "yf")
+                .add("Sec-Fetch-Dest", "empty").add("Sec-Fetch-Mode", "cors")
+                .add("Sec-Fetch-Site", "same-site").build(),
             requestBody.toRequestBody(mediaType),
         )
 
-        val lelResponse = client.newBuilder().cookieJar(CookieJar.NO_COOKIES).build()
-            .newCall(pageListRequest).execute().use { response ->
-                if (!response.isSuccessful) {
-                    error("Unexpected error while fetching lel.")
+        val lelResponse =
+            client.newBuilder().cookieJar(CookieJar.NO_COOKIES).build().newCall(pageListRequest)
+                .execute().use { resp ->
+                    val responseBody = resp.body.string()
+                    Log.d(TAG, "Réponse (HTTP ${resp.code}): ${responseBody.take(200)}")
+
+                    if (responseBody.contains("\"error\"")) {
+                        val errorCode =
+                            Regex(""""error"\s*:\s*"?(\w+)"?""").find(responseBody)?.groupValues?.get(
+                                1,
+                            ) ?: "inconnu"
+                        error("Erreur serveur $errorCode")
+                    }
+
+                    if (!resp.isSuccessful) error("HTTP ${resp.code}")
+
+                    dataAPI(responseBody, chapterId.toInt())
                 }
-                dataAPI(response.body.string(), chapterId.toInt())
-            }
 
         return lelResponse.generateImageUrls().map { Page(it.first, imageUrl = it.second) }
     }
 
-    // Page
     override fun imageUrlParse(response: Response): String = throw UnsupportedOperationException()
 
     override fun imageRequest(page: Page): Request {
-        val imgHeaders = headers.newBuilder()
-            .add("Origin", baseUrl)
-            .build()
-
+        val imgHeaders = headers.newBuilder().add("Origin", wwwBaseUrl).build()
         return GET(page.imageUrl!!, imgHeaders)
-    }
-
-    @SuppressLint("SetJavaScriptEnabled")
-    private fun getFingerprint(): String {
-        var currentValue = preferences.getString("gpu_renderer", null)
-
-        if (currentValue.isNullOrEmpty()) {
-            val latch = CountDownLatch(1)
-            var returnValue = "SUMK" // Default to "IC" if something goes wrong
-
-            Handler(Looper.getMainLooper()).post {
-                val webView = WebView(Injekt.get<Application>())
-                webView.settings.javaScriptEnabled = true
-
-                webView.webViewClient = object : WebViewClient() {
-                    override fun onPageFinished(view: WebView?, url: String?) {
-                        val script = """
-                        (function() {
-                            try {
-                                const canvas = document.createElement("canvas");
-                                const gl = canvas.getContext("webgl");
-                                const debugInfo = gl ? gl.getExtension("WEBGL_debug_renderer_info") : null;
-                                const gpu = debugInfo ? gl.getParameter(debugInfo.UNMASKED_RENDERER_WEBGL) : "IC";
-
-                                return btoa(gpu);
-                            } catch (e) {
-                                return btoa("IC");
-                            }
-                        })();
-                        """.trimIndent()
-
-                        view?.evaluateJavascript(script) {
-                            returnValue = it?.removeSurrounding("\"") ?: "SUMK" // btoa("IC") = "SUMK"
-                            view.stopLoading()
-                            view.destroy()
-                            latch.countDown()
-                        }
-                    }
-                }
-                webView.loadUrl("about:blank")
-            }
-
-            try {
-                latch.await(5, TimeUnit.SECONDS)
-            } catch (e: InterruptedException) {
-            }
-
-            val decodedValue = String(Base64.decode(returnValue, Base64.DEFAULT))
-
-            preferences.edit().putString("gpu_renderer", decodedValue).apply()
-            currentValue = decodedValue
-        }
-
-        return Base64.encodeToString(
-            """{"gpu":"$currentValue","connection":"cellular"}""".toByteArray(),
-            Base64.NO_WRAP,
-        )
-    }
-
-    override fun setupPreferenceScreen(screen: PreferenceScreen) {
-        EditTextPreference(screen.context).apply {
-            key = "gpu_renderer"
-            title = "Unmasked GPU renderer"
-            summary =
-                "Set and cache your GPU renderer string here to bypass fingerprint-based blocking. You can find your GPU renderer by visiting a site like https://www.browserleaks.com/webgl. Make sure to enter the exact string as shown on the site, without any extra spaces or characters and use Google Chrome on Android."
-            setDefaultValue(null)
-            dialogTitle = "GPU Renderer"
-            dialogMessage =
-                "Enter your GPU renderer string here. This is used to bypass blocking based on WebGL fingerprinting. You can find your GPU renderer by visiting a site like https://www.browserleaks.com/webgl using Google Chrome on Android. Make sure to enter the exact string as shown on the site, without any extra spaces or characters."
-
-            setOnPreferenceChangeListener { _, newValue ->
-                preferences.edit().putString(key, newValue as String).commit()
-            }
-        }.also { screen.addPreference(it) }
     }
 }

@@ -1,7 +1,13 @@
 package eu.kanade.tachiyomi.extension.fr.poseidonscans
 
+import android.app.Application
+import android.content.SharedPreferences
 import android.util.Log
+import androidx.preference.EditTextPreference
+import androidx.preference.PreferenceScreen
 import eu.kanade.tachiyomi.network.GET
+import eu.kanade.tachiyomi.source.ConfigurableSource
+import eu.kanade.tachiyomi.source.model.Filter
 import eu.kanade.tachiyomi.source.model.FilterList
 import eu.kanade.tachiyomi.source.model.MangasPage
 import eu.kanade.tachiyomi.source.model.Page
@@ -19,91 +25,196 @@ import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.Request
 import okhttp3.Response
 import org.jsoup.nodes.Document
-import java.net.URLDecoder
+import uy.kohesive.injekt.Injekt
+import uy.kohesive.injekt.api.get
 import java.text.SimpleDateFormat
 import java.util.Locale
 import java.util.TimeZone
 
-class PoseidonScans : HttpSource() {
+class PoseidonScans : HttpSource(), ConfigurableSource {
+
+    // ─── Préférences ────────────────────────────────────────────────────────────
+
+    private val preferences: SharedPreferences by lazy {
+        Injekt.get<Application>().getSharedPreferences("source_$id", 0x0000)
+    }
+
+    private val defaultDomain = "https://poseidon-scans.net"
+
+    /**
+     * Le vrai domaine du site, configurable depuis les préférences de l'extension.
+     */
+    private val domain: String
+        get() = preferences.getString(DOMAIN_PREF, defaultDomain)!!.trimEnd('/')
+
+    /**
+     * baseUrl pointe sur /series (page protégée par Cloudflare).
+     * Le bouton WebView de Tachiyomi ouvrira directement /series,
+     * l'utilisateur résout Cloudflare une fois, et tout fonctionne ensuite.
+     */
+    override val baseUrl: String
+        get() = "$domain/series"
+
+    override fun setupPreferenceScreen(screen: PreferenceScreen) {
+        EditTextPreference(screen.context).apply {
+            key = DOMAIN_PREF
+            title = "URL du site"
+            summary = "Modifier si le site change de domaine.\nActuellement : $domain"
+            setDefaultValue(defaultDomain)
+            dialogTitle = "URL du site"
+            dialogMessage = "Entrez l'URL complète, ex : https://poseidon-scans.net"
+        }.also { screen.addPreference(it) }
+    }
+
+    companion object {
+        private const val DOMAIN_PREF = "pref_domain"
+    }
+
+    // ─── Config de base ─────────────────────────────────────────────────────────
 
     override val name = "Poseidon Scans"
-    override val baseUrl = "https://poseidon-scans.co"
     override val lang = "fr"
     override val supportsLatest = true
     override val versionId = 2
-    private val nextFPushRegex = Regex("""self\.__next_f\.push\(\s*\[\s*1\s*,\s*"(.*)"\s*\]\s*\)""", RegexOption.DOT_MATCHES_ALL)
 
     override val client = network.cloudflareClient
 
-    private fun String.toAbsoluteUrl(): String = if (this.startsWith("http")) this else baseUrl + this
+    private val nextFPushRegex = Regex(
+        """self\.__next_f\.push\(\s*\[\s*1\s*,\s*"(.*)"\s*\]\s*\)""",
+        RegexOption.DOT_MATCHES_ALL,
+    )
 
-    private fun String.toApiCoverUrl(): String {
-        if (this.startsWith("http")) return this
-        if (this.contains("storage/covers/")) return "$baseUrl/api/covers/${this.substringAfter("storage/covers/")}"
-        if (this.startsWith("/api/covers/")) return baseUrl + this
-        if (this.startsWith("/")) return baseUrl + this
-        return "$baseUrl/api/covers/$this"
+    // ─── Helpers URL ─────────────────────────────────────────────────────────────
+
+    private fun String.toAbsoluteUrl(): String {
+        return if (this.startsWith("http")) this else "$domain$this"
     }
 
-    private val isoDateFormatter = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.ENGLISH).apply {
-        timeZone = TimeZone.getTimeZone("UTC")
+    private fun slugToCoverUrl(slug: String): String {
+        return "$domain/api/covers/$slug.webp"
     }
 
-    override fun latestUpdatesRequest(page: Int): Request = GET("$baseUrl/api/manga/lastchapters?limit=16&page=$page", headers)
+    private val isoDateFormatter =
+        SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.ENGLISH).apply {
+            timeZone = TimeZone.getTimeZone("UTC")
+        }
+
+    // ─── Override des requêtes de base ───────────────────────────────────────────
+    // Nécessaire car baseUrl = domain/series, mais les vraies pages manga
+    // sont à domain/serie/... (sans 's').
+    // Sans ces overrides, Tachiyomi construirait domain/series/serie/slug → 404.
+
+    override fun mangaDetailsRequest(manga: SManga): Request {
+        return GET("$domain${manga.url}", headers)
+    }
+
+    override fun chapterListRequest(manga: SManga): Request {
+        return GET("$domain${manga.url}", headers)
+    }
+
+    override fun pageListRequest(chapter: SChapter): Request {
+        return GET("$domain${chapter.url}", headers)
+    }
+
+    // ─── Popular Manga ────────────────────────────────────────────────────────────
+    // /series?sortBy=popular — même format HTML que la recherche,
+    // parsé par searchMangaParse.
+
+    override fun popularMangaRequest(page: Int): Request {
+        return buildSeriesRequest(page, sortBy = "popular")
+    }
+
+    override fun popularMangaParse(response: Response): MangasPage {
+        return searchMangaParse(response)
+    }
+
+    // ─── Latest Updates ───────────────────────────────────────────────────────────
+    // /series?sortBy=latest_chapter — même format HTML que la recherche,
+    // parsé par searchMangaParse.
+
+    override fun latestUpdatesRequest(page: Int): Request {
+        return buildSeriesRequest(page, sortBy = "latest_chapter")
+    }
 
     override fun latestUpdatesParse(response: Response): MangasPage {
-        val apiResponse = try {
-            response.parseAs<LatestApiResponse>()
-        } catch (e: Exception) {
-            return MangasPage(emptyList(), false)
+        return searchMangaParse(response)
+    }
+
+    // ─── Helper pour construire les URLs /series ──────────────────────────────────
+
+    private fun buildSeriesRequest(page: Int, sortBy: String): Request {
+        val url = domain.toHttpUrl().newBuilder().apply {
+            addPathSegment("series")
+            addQueryParameter("sortBy", sortBy)
+            if (page > 1) addQueryParameter("page", page.toString())
+        }.build()
+        return GET(url, headers)
+    }
+
+    // ─── Recherche ────────────────────────────────────────────────────────────────
+
+    override fun searchMangaRequest(page: Int, query: String, filters: FilterList): Request {
+        val url = domain.toHttpUrl().newBuilder().apply {
+            addPathSegment("series")
+            if (query.isNotBlank()) addQueryParameter("search", query)
+            if (page > 1) addQueryParameter("page", page.toString())
+
+            filters.forEach { filter ->
+                when (filter) {
+                    is SortFilter -> addQueryParameter("sortBy", filter.getValue())
+                    is StatusFilter -> filter.getValue()?.let { addQueryParameter("status", it) }
+                    is TypeFilter -> {
+                        val selected = filter.getValues()
+                        if (selected.isNotEmpty()) {
+                            addQueryParameter("tags", selected.joinToString(","))
+                        }
+                    }
+                    is GenreFilter -> {
+                        val selected = filter.getValues()
+                        if (selected.isNotEmpty()) {
+                            addQueryParameter("tags", selected.joinToString(","))
+                        }
+                    }
+                    is MinChaptersFilter -> if (filter.state.isNotBlank()) {
+                        addQueryParameter("minChapters", filter.state)
+                    }
+                    is MaxChaptersFilter -> if (filter.state.isNotBlank()) {
+                        addQueryParameter("maxChapters", filter.state)
+                    }
+                    else -> {}
+                }
+            }
+        }.build()
+        return GET(url, headers)
+    }
+
+    override fun searchMangaParse(response: Response): MangasPage {
+        val document = response.asJsoup()
+
+        val mangas = document.select("div.grid a.block.group").mapNotNull { element ->
+            try {
+                val url = element.attr("href").takeIf { it.isNotBlank() } ?: return@mapNotNull null
+                val title = element.selectFirst("h2")?.text()?.takeIf { it.isNotBlank() }
+                    ?: return@mapNotNull null
+                SManga.create().apply {
+                    this.setUrlWithoutDomain(url)
+                    this.title = title
+                    this.thumbnail_url =
+                        slugToCoverUrl(element.attr("href").substringAfterLast("/"))
+                }
+            } catch (e: Exception) {
+                Log.e("PoseidonScans", "Error parsing manga from HTML element", e)
+                null
+            }
         }
 
-        val mangas = apiResponse.data.mapNotNull { apiManga ->
-            if (apiManga.slug.isBlank()) {
-                return@mapNotNull null
-            }
-            SManga.create().apply {
-                title = apiManga.title
-                url = "/serie/${apiManga.slug}"
-                thumbnail_url = apiManga.coverImage?.takeIf { it.isNotBlank() }?.toApiCoverUrl()
-            }
-        }
-        val hasNextPage = mangas.size == 16
+        val hasNextPage =
+            document.select("nav[aria-label=Pagination] a:contains(Suivant)").isNotEmpty()
         return MangasPage(mangas, hasNextPage)
     }
 
-    override fun popularMangaRequest(page: Int): Request = GET(baseUrl, headers)
+    // ─── Extraction des données Next.js ──────────────────────────────────────────
 
-    override fun popularMangaParse(response: Response): MangasPage {
-        val document = response.asJsoup()
-
-        val mangas = document.select("main > section:nth-of-type(3) div.flex.gap-4 > div.group")
-            .mapNotNull { element ->
-                val anchor = element.selectFirst("a.block")
-                    ?: return@mapNotNull null
-
-                val href = anchor.attr("href").takeIf { it.isNotBlank() }
-                    ?: return@mapNotNull null
-
-                val img = element.selectFirst("img")
-
-                val title = element.selectFirst("h3.text-sm.sm\\:text-base")?.text()
-                    ?.takeIf { it.isNotBlank() }
-                    ?: img?.attr("alt")?.takeIf { it.isNotBlank() }
-                    ?: return@mapNotNull null
-
-                SManga.create().apply {
-                    setUrlWithoutDomain(href)
-
-                    this.title = title
-                    this.thumbnail_url = img?.attr("src")?.takeIf { it.isNotBlank() }?.toApiCoverUrl()
-                }
-            }
-
-        return MangasPage(mangas, false)
-    }
-
-    // Extracts Next.js page data, trying __NEXT_DATA__ script first, then self.__next_f.push.
     private fun extractNextJsPageData(document: Document): JsonObject? {
         val currentHttpUrl = document.location().toHttpUrlOrNull()
         val isSeriesPage = currentHttpUrl?.pathSegments?.getOrNull(0) == "series"
@@ -115,12 +226,16 @@ class PoseidonScans : HttpSource() {
                     val pageProps = rootJson["props"]?.jsonObject?.get("pageProps")?.jsonObject
                     if (pageProps != null) {
                         if (isSeriesPage) {
-                            if (pageProps.containsKey("initialData") || pageProps.containsKey("mangas") || pageProps.containsKey("series")) {
+                            if (pageProps.containsKey("initialData") || pageProps.containsKey("mangas") || pageProps.containsKey(
+                                    "series",
+                                )
+                            ) {
                                 return pageProps
                             }
                         } else {
-                            if (pageProps.containsKey("initialData") || pageProps.containsKey("manga") ||
-                                pageProps.containsKey("chapter") || pageProps.containsKey("images")
+                            if (pageProps.containsKey("initialData") || pageProps.containsKey("manga") || pageProps.containsKey(
+                                    "chapter",
+                                ) || pageProps.containsKey("images")
                             ) {
                                 return pageProps
                             }
@@ -128,11 +243,12 @@ class PoseidonScans : HttpSource() {
                     }
                     rootJson["initialData"]?.jsonObject?.let { initialData ->
                         if (isSeriesPage) {
-                            if (initialData.containsKey("mangas") || initialData.containsKey("series")) {
-                                return initialData
-                            }
+                            if (initialData.containsKey("mangas") || initialData.containsKey("series")) return initialData
                         } else {
-                            if (initialData.containsKey("manga") || initialData.containsKey("chapter") || initialData.containsKey("images")) {
+                            if (initialData.containsKey("manga") || initialData.containsKey("chapter") || initialData.containsKey(
+                                    "images",
+                                )
+                            ) {
                                 return initialData
                             }
                         }
@@ -145,15 +261,12 @@ class PoseidonScans : HttpSource() {
             val mangaSlugForDetails = if (!isSeriesPage) {
                 currentHttpUrl?.pathSegments?.let { segments ->
                     val serieIndex = segments.indexOf("serie")
-                    if (serieIndex != -1 && serieIndex + 1 < segments.size) {
-                        segments[serieIndex + 1]
-                    } else {
-                        ""
-                    }
+                    if (serieIndex != -1 && serieIndex + 1 < segments.size) segments[serieIndex + 1] else ""
                 } ?: ""
             } else {
                 ""
             }
+
             var foundRelevantObject: JsonObject? = null
 
             scriptLoop@ for (script in document.select("script")) {
@@ -166,37 +279,39 @@ class PoseidonScans : HttpSource() {
                     if (matchResult.groupValues.size < 2) return@nextFPushMatch
 
                     val rawDataString = matchResult.groupValues[1]
-                    val cleanedDataString = rawDataString.replace("\\\\", "\\").replace("\\\"", "\"")
+                    val cleanedDataString =
+                        rawDataString.replace("\\\\", "\\").replace("\\\"", "\"")
 
                     if (isSeriesPage) {
                         val seriesMarkers = listOf("\"mangas\":[", "\"series\":[")
                         for (marker in seriesMarkers) {
                             var searchIdx = -1
                             while (true) {
-                                searchIdx = cleanedDataString.indexOf(marker, startIndex = searchIdx + 1)
+                                searchIdx =
+                                    cleanedDataString.indexOf(marker, startIndex = searchIdx + 1)
                                 if (searchIdx == -1) break
                                 var objectStartIndex = -1
                                 var braceDepth = 0
                                 for (i in searchIdx downTo 0) {
                                     when (cleanedDataString[i]) {
                                         '}' -> braceDepth++
-
                                         '{' -> {
                                             if (braceDepth == 0) {
-                                                objectStartIndex = i
-                                                break
-                                            }
-                                            braceDepth--
+                                                objectStartIndex = i; break
+                                            }; braceDepth--
                                         }
                                     }
                                 }
                                 if (objectStartIndex != -1) {
-                                    val potentialJson = extractJsonObjectString(cleanedDataString, objectStartIndex)
+                                    val potentialJson =
+                                        extractJsonObjectString(cleanedDataString, objectStartIndex)
                                     if (potentialJson != null) {
                                         try {
-                                            val parsedContainer = potentialJson.parseAs<JsonObject>()
-                                            if (parsedContainer.containsKey(marker.substringBefore(':').trim('"')) ||
-                                                parsedContainer.containsKey("initialData")
+                                            val parsedContainer =
+                                                potentialJson.parseAs<JsonObject>()
+                                            if (parsedContainer.containsKey(
+                                                    marker.substringBefore(':').trim('"'),
+                                                ) || parsedContainer.containsKey("initialData")
                                             ) {
                                                 foundRelevantObject = parsedContainer
                                                 objectFoundInThisScript = true
@@ -210,14 +325,15 @@ class PoseidonScans : HttpSource() {
                             }
                             if (objectFoundInThisScript) break
                         }
-                    } else { // Non-series page
+                    } else {
                         fun tryParseAndValidate(marker: String, data: String): JsonObject? {
                             var searchIndex = -1
                             while (true) {
                                 searchIndex = data.indexOf(marker, startIndex = searchIndex + 1)
                                 if (searchIndex == -1) break
                                 val objectStartIndex = searchIndex + marker.length - 1
-                                val potentialJson = extractJsonObjectString(data, objectStartIndex) ?: continue
+                                val potentialJson =
+                                    extractJsonObjectString(data, objectStartIndex) ?: continue
                                 try {
                                     val parsedObject = potentialJson.parseAs<JsonObject>()
                                     val isSane = when (marker) {
@@ -254,9 +370,7 @@ class PoseidonScans : HttpSource() {
     }
 
     private fun extractJsonObjectString(data: String, startIndex: Int): String? {
-        if (startIndex < 0 || startIndex >= data.length || data[startIndex] != '{') {
-            return null
-        }
+        if (startIndex < 0 || startIndex >= data.length || data[startIndex] != '{') return null
         var braceBalance = 0
         var inString = false
         var escape = false
@@ -264,36 +378,25 @@ class PoseidonScans : HttpSource() {
 
         for (i in startIndex until data.length) {
             val char = data[i]
-            if (escape) {
-                escape = false
-                continue
-            }
+            if (escape) { escape = false; continue }
             if (char == '\\' && inString) {
                 if (i + 1 < data.length && "\"\\/bfnrtu".contains(data[i + 1])) {
-                    escape = true
-                    continue
+                    escape = true; continue
                 }
             }
-            if (char == '"') {
-                inString = !inString
-            }
+            if (char == '"') inString = !inString
             if (!inString) {
                 when (char) {
                     '{' -> braceBalance++
-
-                    '}' -> {
-                        braceBalance--
-                        if (braceBalance == 0) {
-                            endIndex = i
-                            break
-                        }
-                    }
+                    '}' -> { braceBalance--; if (braceBalance == 0) { endIndex = i; break } }
                 }
             }
             if (braceBalance < 0) return null
         }
         return if (endIndex != -1) data.substring(startIndex, endIndex + 1) else null
     }
+
+    // ─── Détails d'un manga ───────────────────────────────────────────────────────
 
     override fun mangaDetailsParse(response: Response): SManga {
         val document = response.asJsoup()
@@ -313,11 +416,15 @@ class PoseidonScans : HttpSource() {
 
         return SManga.create().apply {
             title = mangaDto.title
-            thumbnail_url = "$baseUrl/api/covers/${mangaDto.slug}.webp"
+            thumbnail_url = slugToCoverUrl(mangaDto.slug)
             author = mangaDto.author?.takeIf { it.isNotBlank() }
             artist = mangaDto.artist?.takeIf { it.isNotBlank() }
 
-            val genresList = mangaDto.categories?.mapNotNull { it.name?.trim() }?.filter { it.isNotBlank() }?.toMutableList() ?: mutableListOf()
+            val genresList = mangaDto.categories
+                ?.mapNotNull { it.name?.trim() }
+                ?.filter { it.isNotBlank() }
+                ?.toMutableList() ?: mutableListOf()
+
             genre = genresList.joinToString(", ") { genreName ->
                 genreName.replaceFirstChar { if (it.isLowerCase()) it.titlecase(Locale.FRENCH) else it.toString() }
             }
@@ -325,16 +432,12 @@ class PoseidonScans : HttpSource() {
             status = parseStatus(mangaDto.status)
 
             var potentialDescription: String? = null
-            val descriptionSelector = "p.text-gray-300.leading-relaxed.whitespace-pre-line"
-
             try {
-                val htmlDescriptionElement = document.selectFirst(descriptionSelector)
+                val htmlDescriptionElement = document.selectFirst("p.text-gray-300.leading-relaxed.whitespace-pre-line")
                 if (htmlDescriptionElement != null) {
                     val htmlText = htmlDescriptionElement.text()?.trim()
                     if (!htmlText.isNullOrBlank()) {
-                        potentialDescription = htmlText
-                            .replaceFirst("Dans : ${mangaDto.title}", "")
-                            .trim()
+                        potentialDescription = htmlText.replaceFirst("Dans : ${mangaDto.title}", "").trim()
                     }
                 }
             } catch (e: Exception) {
@@ -352,10 +455,10 @@ class PoseidonScans : HttpSource() {
 
             mangaDto.alternativeNames?.takeIf { it.isNotBlank() }?.let { altNames ->
                 val trimmedAltNames = altNames.trim()
-                if (finalDesc == "Aucune description.") {
-                    finalDesc = "Noms alternatifs: $trimmedAltNames"
+                finalDesc = if (finalDesc == "Aucune description.") {
+                    "Noms alternatifs: $trimmedAltNames"
                 } else {
-                    finalDesc += "\n\nNoms alternatifs: $trimmedAltNames"
+                    "$finalDesc\n\nNoms alternatifs: $trimmedAltNames"
                 }
             }
             description = finalDesc
@@ -363,13 +466,17 @@ class PoseidonScans : HttpSource() {
         }
     }
 
-    private fun parseStatus(statusString: String?): Int = when (statusString?.trim()?.lowercase(Locale.FRENCH)) {
-        "en cours" -> SManga.ONGOING
-        "terminé" -> SManga.COMPLETED
-        "en pause", "hiatus" -> SManga.ON_HIATUS
-        "annulé", "abandonné" -> SManga.CANCELLED
-        else -> SManga.UNKNOWN
+    private fun parseStatus(statusString: String?): Int {
+        return when (statusString?.trim()?.lowercase(Locale.FRENCH)) {
+            "en cours" -> SManga.ONGOING
+            "terminé" -> SManga.COMPLETED
+            "en pause", "hiatus" -> SManga.ON_HIATUS
+            "annulé", "abandonné" -> SManga.CANCELLED
+            else -> SManga.UNKNOWN
+        }
     }
+
+    // ─── Liste des chapitres ──────────────────────────────────────────────────────
 
     override fun chapterListParse(response: Response): List<SChapter> {
         val document = response.asJsoup()
@@ -387,61 +494,46 @@ class PoseidonScans : HttpSource() {
             throw Exception("Error parsing chapters: ${e.message}. JSON: $mangaDetailsJson")
         }
 
-        return mangaDto.chapters
-            ?.mapNotNull { ch ->
-                // If chapter is premium, check if premium period has expired
-                if (ch.isPremium == true) {
-                    ch.premiumUntil?.let { premiumUntilString ->
-                        val premiumUntilDate = parseIsoDate(premiumUntilString)
-                        if (premiumUntilDate > 0) {
-                            // Exclude if premium period is still active
-                            if (System.currentTimeMillis() <= premiumUntilDate) {
-                                return@mapNotNull null
-                            }
-                        } else {
-                            // If we can't parse the premium until date, exclude the chapter for safety
-                            return@mapNotNull null
-                        }
-                    } ?: return@mapNotNull null // If premiumUntil is null but isPremium is true, exclude
-                }
-                val chapterNumberString = ch.number.toString().removeSuffix(".0")
-                SChapter.create().apply {
-                    val isVolume = ch.isVolume == true || (
-                        ch.number == ch.number.toInt().toFloat() &&
-                            ch.title?.lowercase()?.contains("volume") == true
-                        )
-
-                    val baseName = if (isVolume) {
-                        "Volume $chapterNumberString"
+        return mangaDto.chapters?.mapNotNull { ch ->
+            if (ch.isPremium == true) {
+                ch.premiumUntil?.let { premiumUntilString ->
+                    val premiumUntilDate = parseIsoDate(premiumUntilString)
+                    if (premiumUntilDate > 0) {
+                        if (System.currentTimeMillis() <= premiumUntilDate) return@mapNotNull null
                     } else {
-                        "Chapitre $chapterNumberString"
+                        return@mapNotNull null
                     }
-
-                    name = ch.title?.trim()?.takeIf { it.isNotBlank() }
-                        ?.let { title -> "$baseName - $title" }
-                        ?: baseName
-                    setUrlWithoutDomain("/serie/${mangaDto.slug}/chapter/$chapterNumberString")
-                    date_upload = parseIsoDate(ch.createdAt)
-                    chapter_number = ch.number
-                }
+                } ?: return@mapNotNull null
             }
-            ?.sortedByDescending { it.chapter_number }
-            ?: emptyList()
+            val chapterNumberString = ch.number.toString().removeSuffix(".0")
+            SChapter.create().apply {
+                val isVolume = ch.isVolume == true || (
+                    ch.number == ch.number.toInt().toFloat() &&
+                        ch.title?.lowercase()?.contains("volume") == true
+                    )
+                val baseName = if (isVolume) "Volume $chapterNumberString" else "Chapitre $chapterNumberString"
+                name = ch.title?.trim()?.takeIf { it.isNotBlank() }
+                    ?.let { title -> "$baseName - $title" } ?: baseName
+                setUrlWithoutDomain("/serie/${mangaDto.slug}/chapter/$chapterNumberString")
+                date_upload = parseIsoDate(ch.createdAt)
+                chapter_number = ch.number
+            }
+        }?.sortedByDescending { it.chapter_number } ?: emptyList()
     }
 
     private fun parseIsoDate(dateString: String?): Long {
         if (dateString.isNullOrBlank()) return 0L
-        val cleanedDateString = if (dateString.startsWith("\"\$D")) {
-            dateString.removePrefix("\"\$D").removeSuffix("\"")
-        } else if (dateString.startsWith("\$D")) {
-            dateString.removePrefix("\$D")
-        } else if (dateString.startsWith("\"") && dateString.endsWith("\"") && dateString.length > 2) {
-            dateString.substring(1, dateString.length - 1)
-        } else {
-            dateString
+        val cleanedDateString = when {
+            dateString.startsWith("\"\$D") -> dateString.removePrefix("\"\$D").removeSuffix("\"")
+            dateString.startsWith("\$D") -> dateString.removePrefix("\$D")
+            dateString.startsWith("\"") && dateString.endsWith("\"") && dateString.length > 2 ->
+                dateString.substring(1, dateString.length - 1)
+            else -> dateString
         }
         return isoDateFormatter.tryParse(cleanedDateString)
     }
+
+    // ─── Pages d'un chapitre ──────────────────────────────────────────────────────
 
     override fun pageListParse(response: Response): List<Page> {
         val document = response.asJsoup()
@@ -466,7 +558,7 @@ class PoseidonScans : HttpSource() {
         return imagesDataList.map { pageDto ->
             Page(
                 index = pageDto.order,
-                url = chapterPageUrl, // For Referer in imageRequest
+                url = chapterPageUrl,
                 imageUrl = pageDto.originalUrl.toAbsoluteUrl(),
             )
         }.sortedBy { it.index }
@@ -476,58 +568,105 @@ class PoseidonScans : HttpSource() {
         val refererUrl = page.url
         val imageHeaders = headersBuilder()
             .set("Accept", "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8")
-            .set("Referer", if (refererUrl.isNotBlank()) refererUrl else "$baseUrl/")
+            .set("Referer", if (refererUrl.isNotBlank()) refererUrl else "$domain/")
             .build()
         return GET(page.imageUrl!!, imageHeaders)
     }
 
-    override fun searchMangaRequest(page: Int, query: String, filters: FilterList): Request {
-        val url = baseUrl.toHttpUrl().newBuilder().apply {
-            addPathSegment("series")
-            if (query.isNotBlank()) {
-                addQueryParameter("search", query)
-            }
-            if (page > 1) {
-                addQueryParameter("page", page.toString())
-            }
-        }.build()
-
-        return GET(url, headers)
+    override fun imageUrlParse(response: Response): String {
+        throw UnsupportedOperationException("Not used.")
     }
 
-    override fun searchMangaParse(response: Response): MangasPage {
-        val document = response.asJsoup()
+    // ─── Filtres ──────────────────────────────────────────────────────────────────
 
-        val mangas = document.select("div.grid a.block.group").mapNotNull { element ->
-            try {
-                val url = element.attr("href").takeIf { it.isNotBlank() } ?: return@mapNotNull null
-                val title = element.selectFirst("h2")?.text()?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
+    override fun getFilterList(): FilterList = FilterList(
+        Filter.Header("Les filtres ne fonctionnent pas avec la recherche par texte"),
+        Filter.Separator(),
+        SortFilter(),
+        StatusFilter(),
+        TypeFilter(),
+        GenreFilter(),
+        MinChaptersFilter(),
+        MaxChaptersFilter(),
+    )
 
-                val thumbnailUrlPath = element.selectFirst("img[alt]")
-                    ?.attr("srcset")
-                    ?.substringBefore(" ")
-                    ?.let {
-                        URLDecoder.decode(it, "UTF-8")
-                            .substringAfter("url=")
-                            .substringBefore("&")
-                    }
-
-                SManga.create().apply {
-                    this.setUrlWithoutDomain(url)
-                    this.title = title
-                    this.thumbnail_url = thumbnailUrlPath?.takeIf { it.isNotBlank() }?.toApiCoverUrl()
-                }
-            } catch (e: Exception) {
-                Log.e("PoseidonScans", "Error parsing manga from HTML element", e)
-                null
-            }
+    private class SortFilter : Filter.Select<String>(
+        "Tri",
+        arrayOf(
+            "Ajout Récent (Série)",
+            "Dernier Chapitre",
+            "Plus de chapitres",
+            "Popularité",
+            "Ordre alphabétique",
+        ),
+    ) {
+        fun getValue() = when (state) {
+            1 -> "latest_chapter"
+            2 -> "most_chapters"
+            3 -> "popular"
+            4 -> "alpha"
+            else -> "recent"
         }
-
-        val hasNextPage = document.select("nav[aria-label=Pagination] a:contains(Suivant)").isNotEmpty()
-
-        return MangasPage(mangas, hasNextPage)
     }
 
-    override fun imageUrlParse(response: Response): String = throw UnsupportedOperationException("Not used.")
-    override fun getFilterList(): FilterList = FilterList()
+    private class StatusFilter : Filter.Select<String>(
+        "Statut",
+        arrayOf("Tous", "En cours", "Terminé", "En pause", "Annulé"),
+    ) {
+        fun getValue() = when (state) {
+            1 -> "en cours"
+            2 -> "terminé"
+            3 -> "en pause"
+            4 -> "annulé"
+            else -> null
+        }
+    }
+
+    private class TypeCheckBox(name: String) : Filter.CheckBox(name)
+    private class TypeFilter : Filter.Group<TypeCheckBox>(
+        "Type",
+        listOf(
+            TypeCheckBox("MANGA"),
+            TypeCheckBox("MANHUA"),
+            TypeCheckBox("MANHWA"),
+            TypeCheckBox("WEBTOON"),
+        ),
+    ) {
+        fun getValues() = state.filter { it.state }.map { it.name }
+    }
+
+    private class GenreCheckBox(name: String) : Filter.CheckBox(name)
+    private class GenreFilter : Filter.Group<GenreCheckBox>(
+        "Genres",
+        listOf(
+            GenreCheckBox("Délinquant"),
+            GenreCheckBox("Détective"),
+            GenreCheckBox("Drama"),
+            GenreCheckBox("Ecchi"),
+            GenreCheckBox("Fantaisie"),
+            GenreCheckBox("Fantastique"),
+            GenreCheckBox("Mystère"),
+            GenreCheckBox("Necromancer"),
+            GenreCheckBox("Portail/Donjon"),
+            GenreCheckBox("Psychologique"),
+            GenreCheckBox("Réincarnation"),
+            GenreCheckBox("Regression"),
+            GenreCheckBox("Romance"),
+            GenreCheckBox("Shojo"),
+            GenreCheckBox("Shonen"),
+            GenreCheckBox("Sports"),
+            GenreCheckBox("Super pouvoirs"),
+            GenreCheckBox("Surnaturel"),
+            GenreCheckBox("Systeme"),
+            GenreCheckBox("Tour"),
+            GenreCheckBox("Tragique"),
+            GenreCheckBox("Vengeance"),
+            GenreCheckBox("Vie scolaire"),
+        ),
+    ) {
+        fun getValues() = state.filter { it.state }.map { it.name }
+    }
+
+    private class MinChaptersFilter : Filter.Text("Chapitres min", "0")
+    private class MaxChaptersFilter : Filter.Text("Chapitres max", "500")
 }
