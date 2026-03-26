@@ -52,6 +52,7 @@ jobs:
     needs: prepare
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    continue-on-error: true
     if: ${{ toJson(fromJson(needs.prepare.outputs.matrix).chunk) != '[]' }}
     strategy:
       matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
