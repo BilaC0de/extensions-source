@@ -1,8 +1,0 @@
-ext {
-    extName = 'Pluma Comics'
-    extClass = '.PlumaComics'
-    extVersionCode = 44
-    isNsfw = false
-}
-
-apply from: "$rootDir/common.gradle"

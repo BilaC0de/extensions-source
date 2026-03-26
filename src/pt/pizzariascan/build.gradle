@@ -1,8 +1,0 @@
-ext {
-    extName = 'Pizzaria Scan'
-    extClass = '.Pizzariascan'
-    extVersionCode = 47
-    isNsfw = true
-}
-
-apply from: "$rootDir/common.gradle"
