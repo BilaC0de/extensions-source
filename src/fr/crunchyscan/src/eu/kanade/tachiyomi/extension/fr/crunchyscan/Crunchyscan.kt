@@ -10,7 +10,6 @@ import eu.kanade.tachiyomi.source.model.SChapter
 import eu.kanade.tachiyomi.source.model.SManga
 import eu.kanade.tachiyomi.source.online.HttpSource
 import kotlinx.serialization.Serializable
-import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.json.Json
 import okhttp3.FormBody
 import okhttp3.Headers
@@ -34,31 +33,24 @@ class Crunchyscan : HttpSource() {
 
     private val json: Json by injectLazy()
 
-    // Variable pour stocker le token CSRF
     private var csrfToken: String = ""
 
-    // Fonction pour récupérer le token CSRF
     private fun fetchCsrfToken(): String {
         if (csrfToken.isNotEmpty()) {
             return csrfToken
         }
-
         val response = client.newCall(GET(baseUrl, headers)).execute()
         val html = response.body.string()
         response.close()
-
         val document = Jsoup.parse(html)
         val metaTag = document.selectFirst("meta[name=csrf-token]")
         csrfToken = metaTag?.attr("content") ?: ""
-
         return csrfToken
     }
 
-    // Créer les headers avec le token CSRF
     private fun headersWithCsrf(): Headers {
         val token = fetchCsrfToken()
-        return headers.newBuilder().add("X-CSRF-TOKEN", token)
-            .add("X-Requested-With", "XMLHttpRequest").build()
+        return headers.newBuilder().add("X-CSRF-TOKEN", token).add("X-Requested-With", "XMLHttpRequest").build()
     }
 
     // ============================================
@@ -66,18 +58,16 @@ class Crunchyscan : HttpSource() {
     // ============================================
 
     override fun popularMangaRequest(page: Int): Request {
-        val formBody = FormBody.Builder().add("affichage", "grid").add("team", "").add("artist", "")
-            .add("author", "").add("page", page.toString()).add("chapters[]", "0")
-            .add("chapters[]", "200").add("searchTerm", "").add("orderWith", "Vues")
-            .add("orderBy", "desc").build()
-
+        val formBody =
+            FormBody.Builder().add("affichage", "grid").add("team", "").add("artist", "").add("author", "").add("page", page.toString())
+                .add("chapters[]", "0").add("chapters[]", "200").add("searchTerm", "").add("orderWith", "Vues").add("orderBy", "desc")
+                .build()
         return POST("$baseUrl/api/manga/search/advance", headersWithCsrf(), formBody)
     }
 
     override fun popularMangaParse(response: Response): MangasPage {
         val responseBody = response.body.string()
         val apiResponse = json.decodeFromString<ApiResponse>(responseBody)
-
         val mangaList = apiResponse.data.map { item ->
             SManga.create().apply {
                 title = item.name
@@ -86,7 +76,6 @@ class Crunchyscan : HttpSource() {
                 initialized = false
             }
         }
-
         val hasNextPage = apiResponse.meta.current_page < apiResponse.meta.last_page
         return MangasPage(mangaList, hasNextPage)
     }
@@ -96,11 +85,10 @@ class Crunchyscan : HttpSource() {
     // ============================================
 
     override fun latestUpdatesRequest(page: Int): Request {
-        val formBody = FormBody.Builder().add("affichage", "grid").add("team", "").add("artist", "")
-            .add("author", "").add("page", page.toString()).add("chapters[]", "0")
-            .add("chapters[]", "200").add("searchTerm", "").add("orderWith", "Récent")
-            .add("orderBy", "desc").build()
-
+        val formBody =
+            FormBody.Builder().add("affichage", "grid").add("team", "").add("artist", "").add("author", "").add("page", page.toString())
+                .add("chapters[]", "0").add("chapters[]", "200").add("searchTerm", "").add("orderWith", "Récent").add("orderBy", "desc")
+                .build()
         return POST("$baseUrl/api/manga/search/advance", headersWithCsrf(), formBody)
     }
 
@@ -111,11 +99,10 @@ class Crunchyscan : HttpSource() {
     // ============================================
 
     override fun searchMangaRequest(page: Int, query: String, filters: FilterList): Request {
-        val formBody = FormBody.Builder().add("affichage", "grid").add("team", "").add("artist", "")
-            .add("author", "").add("page", page.toString()).add("chapters[]", "0")
-            .add("chapters[]", "200").add("searchTerm", query).add("orderWith", "Vues")
-            .add("orderBy", "desc").build()
-
+        val formBody =
+            FormBody.Builder().add("affichage", "grid").add("team", "").add("artist", "").add("author", "").add("page", page.toString())
+                .add("chapters[]", "0").add("chapters[]", "200").add("searchTerm", query).add("orderWith", "Vues").add("orderBy", "desc")
+                .build()
         return POST("$baseUrl/api/manga/search/advance", headersWithCsrf(), formBody)
     }
 
@@ -129,22 +116,14 @@ class Crunchyscan : HttpSource() {
 
     override fun mangaDetailsParse(response: Response): SManga {
         val document = Jsoup.parse(response.body?.string() ?: "")
-
         return SManga.create().apply {
             title = document.selectFirst("h2.text-3xl, h1.text-2xl")?.text() ?: ""
-
-            description = document.selectFirst("div.mt-12 > p")?.text()
-                ?: document.selectFirst("p.whitespace-pre-line")?.text()
-
+            description = document.selectFirst("div.mt-12 > p")?.text() ?: document.selectFirst("p.whitespace-pre-line")?.text()
             thumbnail_url = document.selectFirst("img.manga_cover")?.attr("abs:src")
-
             author = document.select("a[href*='/catalog/author/']").joinToString(", ") { it.text() }
-
             genre = document.select("a[href*='/catalog/genre/']").joinToString(", ") { it.text() }
-
             val statusElement = document.select("h3:contains(Status)").first()?.nextElementSibling()
             val statusText = statusElement?.text()?.lowercase()
-
             status = when {
                 statusText?.contains("en cours") == true -> SManga.ONGOING
                 statusText?.contains("terminé") == true -> SManga.COMPLETED
@@ -152,7 +131,6 @@ class Crunchyscan : HttpSource() {
                 statusText?.contains("abandonné") == true -> SManga.CANCELLED
                 else -> SManga.UNKNOWN
             }
-
             initialized = true
         }
     }
@@ -165,60 +143,56 @@ class Crunchyscan : HttpSource() {
 
     override fun chapterListParse(response: Response): List<SChapter> {
         val document = Jsoup.parse(response.body.string())
-
         return document.select("div#ChapterWrap > div.chapterBox").map { element ->
             SChapter.create().apply {
                 val link = element.selectFirst("a.chapter-link[href*='/read/']")
                 url = link?.attr("href")?.let { raw ->
                     when {
-                        raw.startsWith("http://") || raw.startsWith("https://") ->
-                            raw.removePrefix(baseUrl)
+                        raw.startsWith("http://") || raw.startsWith("https://") -> raw.removePrefix(baseUrl)
 
-                        raw.startsWith("//") ->
-                            raw.removePrefix("//")
+                        raw.startsWith("//") -> raw.removePrefix("//")
 
-                        else ->
-                            raw
+                        else -> raw
                     }
                 } ?: ""
                 name = link?.text()?.trim() ?: "Chapitre"
-
-                val dateElement =
-                    element.select("i.fa-timer").first()?.parent()?.nextElementSibling()
-                val dateText = dateElement?.text()
-                date_upload = parseChapterDate(dateText)
+                val dateElement = element.select("i.fa-timer").first()?.parent()?.nextElementSibling()
+                date_upload = parseChapterDate(dateElement?.text())
             }
         }
     }
 
     private fun parseChapterDate(dateStr: String?): Long {
         if (dateStr.isNullOrEmpty()) return 0L
-
         return try {
             val now = System.currentTimeMillis()
             val normalized = dateStr.lowercase().trim()
-
             when {
                 normalized.contains("min") -> {
                     val minutes = normalized.filter { it.isDigit() }.toLongOrNull() ?: 0
                     now - (minutes * 60 * 1000)
                 }
+
                 normalized.contains("heure") || normalized.contains("h") -> {
                     val hours = normalized.filter { it.isDigit() }.toLongOrNull() ?: 0
                     now - (hours * 60 * 60 * 1000)
                 }
+
                 normalized.contains("jour") -> {
                     val days = normalized.filter { it.isDigit() }.toLongOrNull() ?: 0
                     now - (days * DAY_IN_MILLIS)
                 }
+
                 normalized.contains("mois") -> {
                     val months = normalized.filter { it.isDigit() }.toLongOrNull() ?: 0
                     now - (months * MONTH_IN_MILLIS)
                 }
+
                 normalized.contains("année") || normalized.contains("an") -> {
                     val years = normalized.filter { it.isDigit() }.toLongOrNull() ?: 0
                     now - (years * YEAR_IN_MILLIS)
                 }
+
                 else -> 0L
             }
         } catch (e: Exception) {
@@ -227,29 +201,59 @@ class Crunchyscan : HttpSource() {
     }
 
     // ============================================
-    // PAGE LIST — DÉCRYPTAGE des images
+    // PAGE LIST
     // ============================================
 
     override fun pageListRequest(chapter: SChapter): Request = GET(baseUrl + chapter.url, headers)
 
     override fun pageListParse(response: Response): List<Page> {
         val html = response.body?.string() ?: return emptyList()
+        val chapterUrl = response.request.url.toString().substringBefore("?")
         val document = Jsoup.parse(html)
 
-        // Récupérer le data-meta depuis l'élément #a-ads-id
-        val dataMeta = document.selectFirst("#a-ads-id")?.attr("data-meta")
-            ?: return emptyList()
+        // ✅ Détection du challenge Cloudflare Turnstile
+        val hasTurnstile = document.selectFirst(".cf-turnstile") != null
+        val dataMeta = document.selectFirst("#a-ads-id")?.attr("data-meta") ?: ""
 
-        // Décrypter les URLs d'images
+        if (hasTurnstile || dataMeta.isEmpty()) {
+            throw Exception(
+                "⚠️ Ce chapitre est protégé par une vérification Cloudflare.\n\n" + "Ouvrez ce chapitre dans votre navigateur sur crunchyscan.fr, " + "validez le challenge, puis revenez dans Mihon et réessayez.",
+            )
+        }
+
         val imageUrls = decryptImageUrls(dataMeta)
 
-        return imageUrls.mapIndexed { index, url ->
-            Page(index, imageUrl = url)
+        return imageUrls.mapIndexed { index, _ ->
+            Page(index, url = "$chapterUrl?imgIndex=$index")
         }
     }
 
-    override fun imageUrlParse(response: Response): String = throw UnsupportedOperationException("Not used")
+    // ✅ Force un rechargement sans cache pour obtenir une URL fraîche
+    override fun imageUrlRequest(page: Page): Request {
+        val chapterUrl = page.url.substringBefore("?imgIndex")
+        val imgIndex = page.url.substringAfter("?imgIndex=")
+        return okhttp3.Request.Builder().url("$chapterUrl?imgIndex=$imgIndex").headers(headers)
+            .cacheControl(okhttp3.CacheControl.FORCE_NETWORK).build()
+    }
 
+    // ✅ Re-télécharge la page et extrait l'URL fraîche à l'index voulu
+    override fun imageUrlParse(response: Response): String {
+        val targetIndex = response.request.url.queryParameter("imgIndex")?.toIntOrNull() ?: 0
+        val html = response.body?.string() ?: return ""
+        val document = Jsoup.parse(html)
+        val dataMeta = document.selectFirst("#a-ads-id")?.attr("data-meta") ?: return ""
+        val imageUrls = decryptImageUrls(dataMeta)
+        val url = imageUrls.getOrNull(targetIndex) ?: return ""
+
+        // ✅ Ajouter le cid requis par le serveur pour les URLs get-image
+        return if (url.contains("/get-image")) {
+            "$url&cid=$FINGERPRINT_DEFAULT"
+        } else {
+            url
+        }
+    }
+
+    // ✅ Referer complet du chapitre pour les URLs get-image
     override fun imageRequest(page: Page): Request {
         var imageUrl = page.imageUrl ?: ""
 
@@ -257,61 +261,42 @@ class Crunchyscan : HttpSource() {
             imageUrl = imageUrl.replace("&amp;", "&")
         }
 
-        val requestHeaders = headers.newBuilder()
-            .set("secs-ch-aa", "v=\"118\"")
-            .removeAll("Referer")
-            .removeAll("Accept")
-            .build()
+        val referer = if (imageUrl.contains("/get-image") && page.url.isNotEmpty()) {
+            page.url.substringBefore("?imgIndex")
+        } else {
+            baseUrl
+        }
+
+        val requestHeaders = headers.newBuilder().set("secs-ch-aa", "v=\"118\"").set("Referer", referer).removeAll("Accept").build()
 
         return GET(imageUrl, requestHeaders)
     }
 
     // ============================================
-    // DÉCRYPTAGE — Algorithme Vigenère + XOR + AES-CBC
+    // DÉCRYPTAGE
     // ============================================
-    // Algorithme confirmé sur plusieurs chapitres :
-    //   1. Hex → String
-    //   2. Vigenère decrypt (mario)  avec KEY_MARIO_1
-    //   3. XOR decrypt     (tetris) avec KEY_TETRIS_1
-    //   4. XOR decrypt     (tetris) avec KEY_TETRIS_2
-    //   5. Vigenère decrypt (mario)  avec KEY_MARIO_2
-    //   6. Convertir la string en bytes (charCode & 0xFF)
-    //   7. AES-CBC : IV = 16 premiers bytes | reste = ciphertext
-    //   8. Split par ";" → liste d'URLs
 
     private fun decryptImageUrls(dataMeta: String): List<String> {
-        // Étape 1 : Hex → String
         val encryptedText = hexToString(dataMeta)
-
-        // Étape 2-5 : Chaîne de décryptage Vigenère/XOR
         var temp = decryptVigenere(encryptedText, KEY_MARIO_1)
         temp = decryptXor(temp, KEY_TETRIS_1)
         temp = decryptXor(temp, KEY_TETRIS_2)
         val wasmOutput = decryptVigenere(temp, KEY_MARIO_2)
-
-        // Étape 6 : String → Bytes
-        val combinedBytes = ByteArray(wasmOutput.length) { (wasmOutput[it].code and 0xFF).toByte() }
-
-        // Étape 7 : AES-CBC decrypt
+        val combinedBytes = ByteArray(wasmOutput.length) {
+            (wasmOutput[it].code and 0xFF).toByte()
+        }
         val decryptedBytes = decryptAesCbc(combinedBytes)
         val finalString = String(decryptedBytes, StandardCharsets.UTF_8)
 
-        // Étape 8 : Split et filtrer pour garder seulement les bonnes URLs
-        return finalString
-            .split(";")
-            .map { it.trim() }
-            .filter { it.isNotBlank() }
-            .filterNot { it.contains("/get-image", ignoreCase = true) } // FILTRER les URLs get-image
-            .map { url ->
-                when {
-                    url.startsWith("http") -> url
-                    url.startsWith("/") -> "$baseUrl$url"
-                    else -> url
-                }
+        return finalString.split(";").map { it.trim() }.filter { it.isNotBlank() }.filterNot { it.contains("get-lmage") }.map { url ->
+            when {
+                url.startsWith("http") -> url
+                url.startsWith("/") -> "$baseUrl$url"
+                else -> url
             }
+        }
     }
 
-    // Vigenère decrypt : (charCode - keyCharCode + 256) % 256
     private fun decryptVigenere(input: String, key: String): String {
         val sb = StringBuilder(input.length)
         val keyLen = key.length
@@ -322,7 +307,6 @@ class Crunchyscan : HttpSource() {
         return sb.toString()
     }
 
-    // XOR decrypt : charCode xor keyCharCode
     private fun decryptXor(input: String, key: String): String {
         val sb = StringBuilder(input.length)
         val keyLen = key.length
@@ -332,7 +316,6 @@ class Crunchyscan : HttpSource() {
         return sb.toString()
     }
 
-    // Hex vers String : chaque paire de caractères hex → un char
     private fun hexToString(hex: String): String {
         val sb = StringBuilder()
         var i = 0
@@ -343,15 +326,16 @@ class Crunchyscan : HttpSource() {
         return sb.toString()
     }
 
-    // AES-CBC decrypt : IV = 16 premiers bytes | reste = ciphertext | PKCS5 padding
     private fun decryptAesCbc(encryptedBytes: ByteArray): ByteArray {
         val iv = encryptedBytes.copyOfRange(0, 16)
         val cipherText = encryptedBytes.copyOfRange(16, encryptedBytes.size)
         val keyBytes = Base64.decode(AES_KEY_BASE64, Base64.DEFAULT)
-
         val cipher = Cipher.getInstance("AES/CBC/PKCS5Padding")
-        cipher.init(Cipher.DECRYPT_MODE, SecretKeySpec(keyBytes, "AES"), IvParameterSpec(iv))
-
+        cipher.init(
+            Cipher.DECRYPT_MODE,
+            SecretKeySpec(keyBytes, "AES"),
+            IvParameterSpec(iv),
+        )
         return cipher.doFinal(cipherText)
     }
 
@@ -370,7 +354,7 @@ class Crunchyscan : HttpSource() {
     data class MangaItem(
         val name: String,
         val slug: String,
-        val cover_url: String,
+        val cover_url: String? = null,
     )
 
     @Serializable
@@ -385,12 +369,14 @@ class Crunchyscan : HttpSource() {
     )
 
     companion object {
-        // Clés de décryptage extraites du reader.js / crypto.wasm
         private const val KEY_MARIO_1 = "aYdjAA9bFlWzoO2ZDjvw51DUhIy9"
         private const val KEY_TETRIS_1 = "K0Q6YqGsxCtCLPLG"
         private const val KEY_TETRIS_2 = "3jBYzWHkXj1Gke3VcS6pLDLz"
         private const val KEY_MARIO_2 = "L3EtGmOqE746udz0k8P74tUq"
         private const val AES_KEY_BASE64 = "Tr3eGFZNXPTo8mTEBhu1R+mLy/MCcgG8+7ikXbMVaEQ="
+
+        // ✅ Fingerprint par défaut quand il n'est pas calculable
+        private const val FINGERPRINT_DEFAULT = "0000000000000000000000000000000000000000000000000000000000000000"
 
         private const val DAY_IN_MILLIS = 86400000L
         private const val MONTH_IN_MILLIS = 30 * DAY_IN_MILLIS
