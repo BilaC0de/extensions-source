@@ -234,7 +234,7 @@ class Japscan :
 
     override fun chapterFromElement(element: Element): SChapter {
         // Only search for a tag with any attribute containing manga/manhua/manhwa
-        val urlPairs = element.getElementsByTag("a")
+        val urlPairs = (element.getElementsContainingText("Chapitre") + element.getElementsContainingText("Volume"))
             .mapNotNull { el ->
                 // Find the first attribute whose value matches the chapter URL pattern
                 val attrMatch = el.attributes().asList().firstOrNull { attr ->
@@ -351,29 +351,123 @@ class Japscan :
             innerWv.setLayerType(View.LAYER_TYPE_SOFTWARE, null)
             innerWv.addJavascriptInterface(jsInterface, interfaceName)
 
+            /*innerWv.webChromeClient = object : WebChromeClient() {
+                override fun onConsoleMessage(consoleMessage: ConsoleMessage): Boolean {
+                    Log.println(
+                        when (consoleMessage.messageLevel()!!) {
+                            ConsoleMessage.MessageLevel.TIP -> Log.VERBOSE
+                            ConsoleMessage.MessageLevel.DEBUG -> Log.DEBUG
+                            ConsoleMessage.MessageLevel.LOG -> Log.INFO
+                            ConsoleMessage.MessageLevel.WARNING -> Log.WARN
+                            ConsoleMessage.MessageLevel.ERROR -> Log.ERROR
+                        },
+                        "Japscan",
+                        "${consoleMessage.sourceId()}:${consoleMessage.lineNumber()} ${consoleMessage.message()}",
+                    )
+
+                    return super.onConsoleMessage(consoleMessage)
+                }
+            }*/
+
             innerWv.webViewClient = object : WebViewClient() {
                 override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
                     super.onPageStarted(view, url, favicon)
                     view?.evaluateJavascript(
                         $$"""
-                            setTimeout(() => {
-                                Object.defineProperty(Object.prototype, `${window.__rc.il}`, {
-                                    set: function(value) {
-                                        window.$$interfaceName.passPayload(JSON.stringify(value), window.__rc.p, window.__rc.v);
-                                        Object.defineProperty(this, '_imagesLink', {
-                                            value: value,
-                                            writable: true,
-                                            enumerable: false,
-                                            configurable: true
-                                        });
-                                    },
-                                    get: function() {
-                                        return this._imagesLink;
-                                    },
-                                    enumerable: false,
-                                    configurable: true
+                            function waitForRC(callback) {
+                                if (window.__rc) {
+                                    callback();
+                                } else {
+                                    setTimeout(() => waitForRC(callback), 100);
                                 }
-                            )}, 1000)
+                            }
+
+                            const originalReplace = String.prototype.replace;
+
+                            function tryDecodeBase64ToJsonKeysOnly(str) {
+                              const s = String(str).trim();
+                              if (!/^[A-Za-z0-9+/]+={0,2}$/.test(s) || s.length % 4 === 1) return null;
+                              try {
+                                const bin = atob(s);
+                                const utf8 = decodeURIComponent(
+                                  Array.from(bin, c => '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2)).join('')
+                                );
+                                if(!utf8.includes(location.pathname.replaceAll("/", "\\/"))) return null;
+                                const parsed = JSON.parse(utf8);
+                                return parsed
+                              } catch (e) {
+                                return null;
+                              }
+                              return null;
+                            }
+
+                            String.prototype.replace = function(searchValue, replaceValue) {
+                              const receiver = this;
+
+                              const effectiveReplace = (typeof replaceValue === 'function')
+                                ? function(...args) { return replaceValue.apply(this, args); }
+                                : replaceValue;
+
+                              const rawResult = originalReplace.call(receiver, searchValue, effectiveReplace);
+
+                              if (typeof rawResult === 'string') {
+                                const parsed = tryDecodeBase64ToJsonKeysOnly(rawResult);
+                                if (parsed) {
+                                  waitForRC(() => create(parsed))
+                                }
+                              }
+
+                              return rawResult;
+                            };
+
+                            function findFirstArray(obj) {
+                              let found = null;
+                              (function visit(value) {
+                                if (found) return;
+                                if (value && typeof value === 'object') {
+                                  if (Array.isArray(value)) {
+                                    found = value;
+                                    return;
+                                  }
+                                  for (const k in value) {
+                                    if (Object.prototype.hasOwnProperty.call(value, k)) {
+                                      visit(value[k]);
+                                      if (found) return;
+                                    }
+                                  }
+                                }
+                              })(obj);
+                              return found;
+                            }
+
+                            function create(parsed) {
+                                let arr = findFirstArray(parsed)
+                                const arrLen = arr.length;
+                                const chapterMatch = location.pathname.match(/\/(\d+)(?:\/|$)/);
+                                const chapterNum = chapterMatch ? Number(chapterMatch[1]) : null;
+                                let candidate = null;
+                                (function visit(obj) {
+                                    if (candidate) return;
+                                        if (obj && typeof obj === 'object') {
+                                            for (const k in obj) {
+                                                if (!Object.prototype.hasOwnProperty.call(obj, k)) continue;
+                                                const v = obj[k];
+                                                if (typeof v === 'number' && Number.isFinite(v) && Math.floor(v) === v) {
+                                                const n = v;
+                                                if (n > 0 && n <= arrLen && n !== chapterNum) { candidate = n; return; }
+                                            }
+                                            if (typeof v === 'string' && /^[0-9]+$/.test(v)) {
+                                                const n = Number(v);
+                                                if (n > 0 && n <= arrLen && n !== chapterNum) { candidate = n; return; }
+                                            }
+                                            if (typeof v === 'object') visit(v);
+                                            if (candidate) return;
+                                        }
+                                    }
+                                })(parsed);
+                                const finalNum = candidate || chapterNum || 0;
+                                window.$$interfaceName.passPayload(JSON.stringify(arr), window.__rc.p, window.__rc.v, finalNum.toString());
+                            }
                         """.trimIndent(),
                     ) {}
                 }
@@ -391,24 +485,17 @@ class Japscan :
         if (latch.count == 1L) {
             throw Exception("Erreur lors de la récupération des pages")
         }
-
         val baseUrlHost = internalBaseUrl.toHttpUrl().host.substringAfter("www.")
-        val images = jsInterface
-            .images
-            .filter { it.toHttpUrl().host.endsWith(baseUrlHost) } // Pages not served through their CDN are probably ads
+        val images = jsInterface.images
+            .filter { it.toHttpUrl().host.endsWith(baseUrlHost) }
             .mapIndexed { i, url ->
-                val response = client.newCall(
-                    Request.Builder().url("$url&${jsInterface.p}=${jsInterface.v}").headers(
-                        headers.newBuilder().add("Referer", internalBaseUrl).build(),
-                    ).build(),
-                ).execute()
-                if (response.code == 200) {
+                if (i != jsInterface.pi) {
                     Page(i, imageUrl = "$url&${jsInterface.p}=${jsInterface.v}")
                 } else {
                     null
                 }
-            }.filterNotNull()
-
+            }
+            .filterNotNull()
         return Observable.just(images)
     }
 
@@ -452,15 +539,18 @@ class Japscan :
             private set
         var v: String = ""
             private set
+        var pi: Int = -1
+            private set
 
         @JavascriptInterface
         @Suppress("UNUSED")
-        fun passPayload(rawData: String, p: String, v: String) {
+        fun passPayload(rawData: String, p: String, v: String, pi: String) {
             try {
                 images = rawData.parseAs<List<String>>()
                     .map { "$it?y=1" }
                 this.p = p
                 this.v = v
+                this.pi = pi.toInt()
                 latch.countDown()
             } catch (_: Exception) {
                 return
