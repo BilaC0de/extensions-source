@@ -25,6 +25,7 @@ import okhttp3.CookieJar
 import okhttp3.Headers
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
@@ -48,108 +49,76 @@ class ScanManga :
 
     private val preferences by getPreferencesLazy()
 
-    override val client = super.client.newBuilder()
-        .addNetworkInterceptor { chain ->
-            val originalRequest = chain.request()
-            val header = originalRequest.header("X-Requested-With")
-            if (header != null && header.isEmpty()) {
-                return@addNetworkInterceptor chain.proceed(
-                    originalRequest.newBuilder()
-                        .removeHeader("X-Requested-With")
-                        .build(),
-                )
-            }
-            return@addNetworkInterceptor chain.proceed(originalRequest)
+    override val client: OkHttpClient = network.cloudflareClient.newBuilder().addNetworkInterceptor { chain ->
+        val originalRequest = chain.request()
+        val header = originalRequest.header("X-Requested-With")
+        if (header != null && header.isEmpty()) {
+            return@addNetworkInterceptor chain.proceed(
+                originalRequest.newBuilder().removeHeader("X-Requested-With").build(),
+            )
         }
-        .build()
+        return@addNetworkInterceptor chain.proceed(originalRequest)
+    }.build()
 
     override fun headersBuilder(): Headers.Builder {
         val currentChromeVersion = super.headersBuilder().build().get("User-Agent")?.let {
             Regex("Chrome/(\\d+)").find(it)?.groupValues?.get(1)?.toIntOrNull()
         } ?: 145
 
-        return Headers.Builder()
-//            .add(
-//                "sec-ch-ua",
-//                "\"Not:A-Brand\";v=\"99\", \"Google Chrome\";v=\"$currentChromeVersion\", \"Chromium\";v=\"$currentChromeVersion\"",
-//            )
-//            .add("sec-ch-ua-mobile", "?1")
-//            .add("sec-ch-ua-platform", "\"Android\"")
-            .add("upgrade-insecure-requests", "1")
-            .add(
-                "user-agent",
-                "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/$currentChromeVersion.0.0.0 Mobile Safari/537.36",
-            )
-            .add(
-                "accept",
-                "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
-            )
-            .add("sec-fetch-site", "none")
-//            .add("sec-fetch-mode", "navigate")
-//            .add("sec-fetch-user", "?1")
-//            .add("sec-fetch-dest", "document")
-            .add("accept-language", "fr-FR,fr;q=0.9,en-US;q=0.8,en;q=0.7")
-//            .add("priority", "u=0, i")
-            .add("X-Requested-With", "")
+        return Headers.Builder().add("upgrade-insecure-requests", "1").add(
+            "user-agent",
+            "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/$currentChromeVersion.0.0.0 Mobile Safari/537.36",
+        ).add(
+            "accept",
+            "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+        ).add("sec-fetch-site", "none").add("accept-language", "fr-FR,fr;q=0.9,en-US;q=0.8,en;q=0.7").add("X-Requested-With", "")
     }
 
-    // Popular
+    // ---- Popular ----
+
     override fun popularMangaRequest(page: Int): Request = GET("$baseUrl/TOP-Manga-Webtoon-45.html", headers)
 
     override fun popularMangaParse(response: Response): MangasPage {
         val mangas = response.asJsoup().select("#carouselTOPContainer > div.top").map { element ->
             SManga.create().apply {
                 val titleElement = element.selectFirst("a.atop")!!
-
                 title = titleElement.text()
                 setUrlWithoutDomain(titleElement.attr("href"))
                 thumbnail_url = element.selectFirst("img")?.attr("data-original")
             }
         }
-
         return MangasPage(mangas, false)
     }
 
-    // Latest
+    // ---- Latest ----
+
     override fun latestUpdatesRequest(page: Int): Request = GET(baseUrl, headers)
 
     override fun latestUpdatesParse(response: Response): MangasPage {
-        val document = response.asJsoup()
-
-        val mangas = document.select("#content_news .publi").map { element ->
+        val mangas = response.asJsoup().select("#content_news .publi").map { element ->
             SManga.create().apply {
                 val mangaElement = element.selectFirst("a.l_manga")!!
-
                 title = mangaElement.text()
                 setUrlWithoutDomain(mangaElement.attr("href"))
-
                 thumbnail_url = element.selectFirst("img")?.attr("src")
             }
         }
-
         return MangasPage(mangas, false)
     }
 
-    // Search
-    override fun searchMangaRequest(page: Int, query: String, filters: FilterList): Request {
-        val url = "$baseUrl/api/search/quick.json"
-            .toHttpUrl().newBuilder()
-            .addQueryParameter("term", query)
-            .build()
-            .toString()
+    // ---- Search ----
 
-        val newHeaders = headers.newBuilder()
-            .add("Content-type", "application/json; charset=UTF-8")
-            .build()
+    override fun searchMangaRequest(page: Int, query: String, filters: FilterList): Request {
+        val url = "$baseUrl/api/search/quick.json".toHttpUrl().newBuilder().addQueryParameter("term", query).build().toString()
+
+        val newHeaders = headers.newBuilder().add("Content-type", "application/json; charset=UTF-8").build()
 
         return GET(url, newHeaders)
     }
 
     override fun searchMangaParse(response: Response): MangasPage {
         val json = response.body.string()
-        if (json == "[]") {
-            return MangasPage(emptyList(), false)
-        }
+        if (json == "[]") return MangasPage(emptyList(), false)
 
         return MangasPage(
             json.parseAs<MangaSearchDto>().title?.map {
@@ -163,7 +132,8 @@ class ScanManga :
         )
     }
 
-    // Details
+    // ---- Details ----
+
     override fun mangaDetailsParse(response: Response): SManga {
         val document = response.asJsoup()
 
@@ -184,7 +154,8 @@ class ScanManga :
         }
     }
 
-    // Chapters
+    // ---- Chapters ----
+
     override fun chapterListParse(response: Response): List<SChapter> {
         val document = response.asJsoup()
         return document.select("div.chapt_m").map { element ->
@@ -201,13 +172,15 @@ class ScanManga :
         }
     }
 
-    // Pages
+    // ---- Pages ----
+
+    private val whitespaceRegex = Regex("""\s+""")
+
     private fun decodeHunter(obfuscatedJs: String): String {
         val markers = markerManager::getMarkers
 
         val (encoded, mask, intervalStr, optionStr) = runSafe {
-            Regex(markers().regexes.hunterObfuscation).find(obfuscatedJs)?.destructured
-                ?: error("Failed to match pattern")
+            Regex(markers().regexes.hunterObfuscation).find(obfuscatedJs)?.destructured ?: error("Failed to match pattern")
         }
 
         val interval = intervalStr.toInt()
@@ -218,75 +191,60 @@ class ScanManga :
 
         return buildString {
             for (token in tokens) {
-                // Reverse the hashIt() operation: convert masked characters back to digits
                 val digitString = token.map { c ->
                     reversedMap[c]?.toString() ?: error("Invalid masked character: $c")
                 }.joinToString("")
 
-                // Convert from base `option` to decimal
-                val number = digitString.toIntOrNull(option)
-                    ?: error("Failed to parse token: $digitString as base $option")
+                val number = digitString.toIntOrNull(option) ?: error("Failed to parse token: $digitString as base $option")
 
-                // Reverse the shift done during encodeIt()
-                val originalCharCode = number - interval
-
-                append(originalCharCode.toChar())
+                append((number - interval).toChar())
             }
         }
     }
 
-    private val multipleSpaces = Regex("""\s+""")
-
     private fun dataAPI(data: String, idc: Int): UrlPayload {
         if (data.contains("error")) {
-            error("Received error response from data API: ${multipleSpaces.replace(data, " ").trim()}")
+            error("Received error response from data API: ${whitespaceRegex.replace(data, " ").trim()}")
         }
 
-        // Step 1: Base64 decode the input
         val compressedBytes = Base64.decode(data, Base64.NO_WRAP or Base64.NO_PADDING)
 
-        // Step 2: Inflate (zlib decompress)
         val inflater = Inflater()
         inflater.setInput(compressedBytes)
-        val outputBuffer = ByteArray(512 * 1024) // 512 KB buffer, should be more than enough
+        val outputBuffer = ByteArray(512 * 1024)
         val decompressedLength = inflater.inflate(outputBuffer)
         inflater.end()
 
         val inflated = String(outputBuffer, 0, decompressedLength)
 
-        // Step 3: Remove trailing hex string and reverse
         val hexIdc = idc.toString(16)
-        val cleaned = inflated.removeSuffix(hexIdc)
-        val reversed = cleaned.reversed()
+        val reversed = inflated.removeSuffix(hexIdc).reversed()
 
-        // Step 4: Base64 decode and parse JSON
-        val finalJsonStr = String(Base64.decode(reversed, Base64.DEFAULT))
-
-        return finalJsonStr.parseAs<UrlPayload>()
+        return String(Base64.decode(reversed, Base64.DEFAULT)).parseAs<UrlPayload>()
     }
 
     override fun pageListParse(response: Response): List<Page> {
         val document = response.asJsoup()
         val markers = markerManager::getMarkers
 
-        val packedScript = runSafe { document.selectFirst(markers().selectors.packedScript)!!.data() }
+        val packedScript = runSafe {
+            document.selectFirst(markers().selectors.packedScript)!!.data()
+        }
         val unpackedScript = decodeHunter(packedScript)
 
-        // parametersRegex
         val (sml) = runSafe {
-            Regex(markers().regexes.smlParam).find(unpackedScript)?.destructured
-                ?: error("Failed to extract sml parameter.")
+            Regex(markers().regexes.smlParam).find(unpackedScript)?.destructured ?: error("Failed to extract sml parameter.")
         }
 
         val (sme) = runSafe {
-            Regex(markers().regexes.smeParam).find(unpackedScript)?.destructured
-                ?: error("Failed to extract sme parameter.")
+            Regex(markers().regexes.smeParam).find(unpackedScript)?.destructured ?: error("Failed to extract sme parameter.")
         }
 
         val (chapterId) = runSafe {
-            Regex(markers().regexes.chapterInfo).find(packedScript)?.destructured
-                ?: error("Failed to extract chapter ID.")
+            Regex(markers().regexes.chapterInfo).find(packedScript)?.destructured ?: error("Failed to extract chapter ID.")
         }
+
+        val documentUrl = document.baseUri().toHttpUrl()
 
         val availableVariables = mapOf(
             "sme" to sme,
@@ -294,23 +252,22 @@ class ScanManga :
             "fingerprint" to getFingerprint(),
             "chapterId" to chapterId,
             "topDomain" to (baseUrl.toHttpUrl().topPrivateDomain() ?: ""),
+            "chapterUrl" to documentUrl.toString(),
         )
 
         val mediaType = "application/json; charset=UTF-8".toMediaType()
-        val documentUrl = document.baseUri().toHttpUrl()
 
         val lelResponse = runSafe {
             val requestBody = injectVariables(markers().apiConfig.requestBody, availableVariables)
             val pageListUrl = injectVariables(markers().apiConfig.pageListUrl, availableVariables)
-            val requestHeaders = headers.newBuilder()
-                .add("Origin", "${documentUrl.scheme}://${documentUrl.host}")
-                .add("Referer", documentUrl.toString())
-                .apply {
+
+            val requestHeaders = headers.newBuilder().add("Origin", "${documentUrl.scheme}://${documentUrl.host}")
+                .add("Referer", "${documentUrl.scheme}://${documentUrl.host}/").set("accept", "*/*").set("sec-fetch-site", "same-site")
+                .add("sec-fetch-mode", "cors").add("sec-fetch-dest", "empty").apply {
                     markers().apiConfig.headers?.forEach { (key, value) ->
                         add(key, injectVariables(value, availableVariables))
                     }
-                }
-                .build()
+                }.build()
 
             val pageListRequest = POST(
                 url = pageListUrl,
@@ -318,28 +275,25 @@ class ScanManga :
                 body = requestBody.toRequestBody(mediaType),
             )
 
-            client.newBuilder().cookieJar(CookieJar.NO_COOKIES).build()
-                .newCall(pageListRequest).execute().use { response ->
-                    if (!response.isSuccessful) {
-                        error("Unexpected error while fetching lel. HTTP ${response.code}")
-                    }
-                    dataAPI(response.body.string(), chapterId.toInt())
+            client.newBuilder().cookieJar(CookieJar.NO_COOKIES).build().newCall(pageListRequest).execute().use { response ->
+                if (!response.isSuccessful) {
+                    error("Unexpected error while fetching lel. HTTP ${response.code}")
                 }
+                dataAPI(response.body.string(), chapterId.toInt())
+            }
         }
 
         return lelResponse.generateImageUrls().map { Page(it.first, imageUrl = it.second) }
     }
 
-    // Page
     override fun imageUrlParse(response: Response): String = throw UnsupportedOperationException()
 
     override fun imageRequest(page: Page): Request {
-        val imgHeaders = headers.newBuilder()
-            .add("Origin", baseUrl)
-            .build()
-
+        val imgHeaders = headers.newBuilder().add("Origin", baseUrl).build()
         return GET(page.imageUrl!!, imgHeaders)
     }
+
+    // ---- Fingerprint ----
 
     @SuppressLint("SetJavaScriptEnabled")
     private fun getFingerprint(): String {
@@ -347,7 +301,7 @@ class ScanManga :
 
         if (currentValue.isNullOrEmpty()) {
             val latch = CountDownLatch(1)
-            var returnValue = "SUMK" // Default to "IC" if something goes wrong
+            var returnValue = "SUMK"
 
             Handler(Looper.getMainLooper()).post {
                 val webView = WebView(Injekt.get<Application>())
@@ -362,7 +316,6 @@ class ScanManga :
                                 const gl = canvas.getContext("webgl");
                                 const debugInfo = gl ? gl.getExtension("WEBGL_debug_renderer_info") : null;
                                 const gpu = debugInfo ? gl.getParameter(debugInfo.UNMASKED_RENDERER_WEBGL) : "IC";
-
                                 return btoa(gpu);
                             } catch (e) {
                                 return btoa("IC");
@@ -371,7 +324,7 @@ class ScanManga :
                         """.trimIndent()
 
                         view?.evaluateJavascript(script) {
-                            returnValue = it?.removeSurrounding("\"") ?: "SUMK" // btoa("IC") = "SUMK"
+                            returnValue = it?.removeSurrounding("\"") ?: "SUMK"
                             view.stopLoading()
                             view.destroy()
                             latch.countDown()
@@ -387,16 +340,17 @@ class ScanManga :
             }
 
             val decodedValue = String(Base64.decode(returnValue, Base64.DEFAULT))
-
             preferences.edit().putString("gpu_renderer", decodedValue).apply()
             currentValue = decodedValue
         }
 
         return Base64.encodeToString(
-            """{"gpu":"$currentValue","connection":"cellular"}""".toByteArray(),
+            """{"gpu":"$currentValue","connection":"IC"}""".toByteArray(),
             Base64.NO_WRAP,
         )
     }
+
+    // ---- Preferences ----
 
     override fun setupPreferenceScreen(screen: PreferenceScreen) {
         EditTextPreference(screen.context).apply {
@@ -408,7 +362,6 @@ class ScanManga :
             dialogTitle = "GPU Renderer"
             dialogMessage =
                 "Enter your GPU renderer string here. This is used to bypass blocking based on WebGL fingerprinting. You can find your GPU renderer by visiting a site like https://www.browserleaks.com/webgl using Google Chrome on Android. Make sure to enter the exact string as shown on the site, without any extra spaces or characters."
-
             setOnPreferenceChangeListener { _, newValue ->
                 preferences.edit().putString(key, newValue as String).commit()
             }
@@ -419,18 +372,15 @@ class ScanManga :
             title = "Debug: Markers JSON"
             summary =
                 "For debugging purposes. Displays the raw JSON string of the markers used for decoding obfuscated scripts. Automatically updated when markers are refreshed."
-
             setDefaultValue(null)
             dialogTitle = "Markers JSON"
             dialogMessage =
                 "This is the raw JSON string of the markers used for decoding obfuscated scripts. It is automatically updated when markers are refreshed. You can use this information for debugging purposes."
-
-            setOnPreferenceChangeListener { _, _ ->
-                // Do not allow manual changes, this is for display only
-                false
-            }
+            setOnPreferenceChangeListener { _, _ -> false }
         }.also { screen.addPreference(it) }
     }
+
+    // ---- Internals ----
 
     private val markerManager by lazy { MarkerManager(client, preferences) }
 
@@ -442,10 +392,8 @@ class ScanManga :
         return result
     }
 
-    fun <T> runSafe(fn: () -> T): T = runCatching { fn() }.getOrElse {
-        markerManager.fetchWithRetry()
-
-        // Second attempt
+    private fun <T> runSafe(fn: () -> T): T = runCatching { fn() }.getOrElse {
+        markerManager.enableFallback()
         runCatching { fn() }.getOrElse { throwable ->
             markerManager.handleFatalFailure(throwable)
         }
