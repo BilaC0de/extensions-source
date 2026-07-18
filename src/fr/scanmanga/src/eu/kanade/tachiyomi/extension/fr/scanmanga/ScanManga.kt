@@ -34,6 +34,8 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
 import org.jsoup.Jsoup
+import org.jsoup.nodes.Document
+import org.jsoup.nodes.Element
 import rx.Observable
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
@@ -46,8 +48,7 @@ abstract class ScanManga :
     ConfigurableSource {
 
     private val domain = baseUrl.toHttpUrl().host
-    private val baseImageUrl = "https://static.$domain/img/manga"
-    private val baseSearchUrl = "https://bqj.$domain/search/quick.json"
+    private val baseImageUrl = "https://static.scan-manga.com/img/manga"
 
     override val supportsLatest = true
 
@@ -63,28 +64,19 @@ abstract class ScanManga :
         }
     }
 
-    override val client = super.client.newBuilder()
-        .addNetworkInterceptor(stripEmptyXRequestedWith)
-        .build()
+    override val client = super.client.newBuilder().addNetworkInterceptor(stripEmptyXRequestedWith).build()
 
     // Reader-page fetches reuse the app client (cache, gzip, DoH, cookie jar, etc.) but strip
     // the host's CloudflareInterceptor — that interceptor wastes ~30 s per call trying its own
     // headless solve before throwing, blowing up our polling.
     private val readerClient: OkHttpClient by lazy {
-        client.newBuilder()
-            .apply { interceptors().removeAll { it.javaClass.simpleName == "CloudflareInterceptor" } }
-            .build()
+        client.newBuilder().apply { interceptors().removeAll { it.javaClass.simpleName == "CloudflareInterceptor" } }.build()
     }
 
-    override fun headersBuilder(): Headers.Builder = super.headersBuilder()
-        .add("upgrade-insecure-requests", "1")
-        .add(
-            "accept",
-            "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
-        )
-        .add("sec-fetch-site", "none")
-        .add("accept-language", "fr-FR,fr;q=0.9,en-US;q=0.8,en;q=0.7")
-        .add("X-Requested-With", "")
+    override fun headersBuilder(): Headers.Builder = super.headersBuilder().add("upgrade-insecure-requests", "1").add(
+        "accept",
+        "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+    ).add("sec-fetch-site", "none").add("accept-language", "fr-FR,fr;q=0.9,en-US;q=0.8,en;q=0.7").add("X-Requested-With", "")
 
     // Popular
     override fun popularMangaRequest(page: Int): Request = GET("$baseUrl/TOP-Manga-Webtoon-45.html", headers)
@@ -96,7 +88,7 @@ abstract class ScanManga :
 
                 title = titleElement.text()
                 setUrlWithoutDomain(titleElement.attr("href"))
-                thumbnail_url = element.selectFirst("img")?.attr("data-original")
+                thumbnail_url = element.extractThumbnail()
             }
         }
 
@@ -116,36 +108,60 @@ abstract class ScanManga :
                 title = mangaElement.text()
                 setUrlWithoutDomain(mangaElement.attr("href"))
 
-                thumbnail_url = element.selectFirst("img")?.attr("src")
+                thumbnail_url = element.extractThumbnail()
             }
         }
 
         return MangasPage(mangas, false)
     }
 
+    /**
+     * The site lazy-loads thumbnails via `data-original`, but the first few entries on a page
+     * are rendered without the lazy-load wrapper and have the real URL directly in `src`.
+     * Fall back to `src`, excluding the known fixed lazy placeholder image.
+     */
+    private fun Element.extractThumbnail(): String? {
+        val img = selectFirst("img") ?: return null
+        val lazyUrl = img.attr("data-original")
+        if (lazyUrl.isNotEmpty()) return lazyUrl
+
+        val src = img.attr("abs:src")
+        return src.takeIf { it.isNotEmpty() && it != LAZY_PLACEHOLDER }
+    }
+
     // Search
-    override fun searchMangaRequest(page: Int, query: String, filters: FilterList): Request {
-        val url = baseSearchUrl
-            .toHttpUrl().newBuilder()
+    override fun searchMangaRequest(
+        page: Int,
+        query: String,
+        filters: FilterList,
+    ): Request {
+        val url = "https://bqj.scan-manga.com/search/quick.json"
+            .toHttpUrl()
+            .newBuilder()
             .addQueryParameter("term", query)
             .build()
-            .toString()
 
-        val newHeaders = headers.newBuilder()
-            .add("Content-type", "application/json; charset=UTF-8")
-            .build()
-
-        return GET(url, newHeaders)
+        return GET(
+            url,
+            headers.newBuilder()
+                .set("Origin", "https://m.scan-manga.com")
+                .set("Referer", "https://m.scan-manga.com/")
+                .set("Content-Type", "application/json; charset=UTF-8")
+                .build(),
+        )
     }
 
     override fun searchMangaParse(response: Response): MangasPage {
-        val json = response.body.string()
-        if (json == "[]") {
+        val json = response.body.string().trim()
+
+        if (json.isEmpty() || json == "[]") {
             return MangasPage(emptyList(), false)
         }
 
+        val dto = json.parseAs<MangaSearchDto>()
+
         return MangasPage(
-            json.parseAs<MangaSearchDto>().title?.map {
+            dto.title?.map {
                 SManga.create().apply {
                     title = it.nom_match
                     setUrlWithoutDomain(it.url)
@@ -166,10 +182,10 @@ abstract class ScanManga :
             description = document.selectFirst("div.titres_desc[itemprop=description]")?.text()
             genre = document.selectFirst("div.titres_souspart span[itemprop=genre]")?.text()
 
-            val statutText = document.selectFirst("div.titres_souspart")?.ownText()
+            val statutText = document.selectFirst("div.titres_souspart")?.ownText()?.lowercase()
             status = when {
-                statutText?.contains("En cours", ignoreCase = true) == true -> SManga.ONGOING
-                statutText?.contains("Terminé", ignoreCase = true) == true -> SManga.COMPLETED
+                statutText?.contains("en cours") == true -> SManga.ONGOING
+                statutText?.contains("terminé") == true -> SManga.COMPLETED
                 else -> SManga.UNKNOWN
             }
 
@@ -213,8 +229,7 @@ abstract class ScanManga :
                 }.joinToString("")
 
                 // Convert from base `option` to decimal
-                val number = digitString.toIntOrNull(option)
-                    ?: error("Failed to parse token: $digitString as base $option")
+                val number = digitString.toIntOrNull(option) ?: error("Failed to parse token: $digitString as base $option")
 
                 // Reverse the shift done during encodeIt()
                 val originalCharCode = number - interval
@@ -340,13 +355,16 @@ abstract class ScanManga :
                     // Schedule teardown on the main looper directly — view.postDelayed
                     // is silently dropped because the WebView isn't attached to a window.
                     // The settle window lets CF's Turnstile beacon commit cf_clearance.
-                    mainHandler.postDelayed({
-                        runCatching {
-                            view?.stopLoading()
-                            view?.destroy()
-                        }
-                        latch.countDown()
-                    }, WARMUP_SETTLE_MS)
+                    mainHandler.postDelayed(
+                        {
+                            runCatching {
+                                view?.stopLoading()
+                                view?.destroy()
+                            }
+                            latch.countDown()
+                        },
+                        WARMUP_SETTLE_MS,
+                    )
                 }
             }
             wv.loadUrl("$baseUrl/")
@@ -363,18 +381,19 @@ abstract class ScanManga :
 
     override fun pageListParse(response: Response): List<Page> = parsePageList(response.asJsoup())
 
-    private fun parsePageList(document: org.jsoup.nodes.Document): List<Page> {
+    // NOTE: This deliberately deviates from the standard override-the-request-method flow.
+    // The follow-up request to the "lel" data API needs parameters (sml/sme/chapterId/fingerprint)
+    // extracted from the initial chapter page response, so it can't be expressed as a plain
+    // pageListRequest() — the second call is inherently dependent on the first one's parsed output.
+    private fun parsePageList(document: Document): List<Page> {
         val packedScript = document.selectFirst(PACKED_SCRIPT_SELECTOR)!!.data()
         val unpackedScript = decodeHunter(packedScript)
 
-        val (sml) = SML_PARAM_REGEX.find(unpackedScript)?.destructured
-            ?: error("Failed to extract sml parameter.")
+        val (sml) = SML_PARAM_REGEX.find(unpackedScript)?.destructured ?: error("Failed to extract sml parameter.")
 
-        val (sme) = SME_PARAM_REGEX.find(unpackedScript)?.destructured
-            ?: error("Failed to extract sme parameter.")
+        val (sme) = SME_PARAM_REGEX.find(unpackedScript)?.destructured ?: error("Failed to extract sme parameter.")
 
-        val (chapterId) = CHAPTER_INFO_REGEX.find(packedScript)?.destructured
-            ?: error("Failed to extract chapter ID.")
+        val (chapterId) = CHAPTER_INFO_REGEX.find(packedScript)?.destructured ?: error("Failed to extract chapter ID.")
 
         val availableVariables = mapOf(
             "sme" to sme,
@@ -389,11 +408,9 @@ abstract class ScanManga :
 
         val requestBody = injectVariables(REQUEST_BODY, availableVariables)
         val pageListUrl = injectVariables(PAGE_LIST_URL, availableVariables)
-        val requestHeaders = headers.newBuilder()
-            .add("Origin", "${documentUrl.scheme}://${documentUrl.host}")
-            .add("Referer", documentUrl.toString())
-            .add("Token", LEL_TOKEN)
-            .build()
+        val requestHeaders =
+            headers.newBuilder().add("Origin", "${documentUrl.scheme}://${documentUrl.host}").add("Referer", documentUrl.toString())
+                .add("Token", LEL_TOKEN).build()
 
         val pageListRequest = POST(
             url = pageListUrl,
@@ -401,13 +418,12 @@ abstract class ScanManga :
             body = requestBody.toRequestBody(mediaType),
         )
 
-        val lelResponse = client.newBuilder().cookieJar(CookieJar.NO_COOKIES).build()
-            .newCall(pageListRequest).execute().use { response ->
-                if (!response.isSuccessful) {
-                    error("Unexpected error while fetching lel. HTTP ${response.code}")
-                }
-                dataAPI(response.body.string(), chapterId.toInt())
+        val lelResponse = client.newBuilder().cookieJar(CookieJar.NO_COOKIES).build().newCall(pageListRequest).execute().use { response ->
+            if (!response.isSuccessful) {
+                error("Unexpected error while fetching lel. HTTP ${response.code}")
             }
+            dataAPI(response.body.string(), chapterId.toInt())
+        }
 
         return lelResponse.generateImageUrls().map { Page(it.first, imageUrl = it.second) }
     }
@@ -416,9 +432,7 @@ abstract class ScanManga :
     override fun imageUrlParse(response: Response): String = throw UnsupportedOperationException()
 
     override fun imageRequest(page: Page): Request {
-        val imgHeaders = headers.newBuilder()
-            .add("Origin", baseUrl)
-            .build()
+        val imgHeaders = headers.newBuilder().add("Origin", baseUrl).build()
 
         return GET(page.imageUrl!!, imgHeaders)
     }
@@ -506,11 +520,20 @@ abstract class ScanManga :
     }
 
     companion object {
-        private const val PACKED_SCRIPT_SELECTOR = "script:containsData(eval\\(function \\()"
-        private val HUNTER_OBFUSCATION_REGEX = Regex("""eval\s*\(\s*function\s*\(\s*\w\s*,\s*\w\s*,\s*\w\s*,\s*\w\s*,\s*\w\s*,\s*\w\s*(?:,\s*[^)]+)?\)\s*\{\s*.*?\s*\}\s*\(\s*"([^"]+)"\s*,\s*\d+\s*,\s*"([^"]+)"\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*\d+\s*\)\s*\)""")
-        private val SML_PARAM_REGEX = Regex("""sml\s*=\s*'([^']+)'""")
-        private val SME_PARAM_REGEX = Regex("""sme\s*=\s*'([^']+)'""")
-        private val CHAPTER_INFO_REGEX = Regex("""const idc = (\d+)""")
+        private const val LAZY_PLACEHOLDER = "https://static.scan-manga.com/img/lazy_130x45.jpg"
+        private const val PACKED_SCRIPT_SELECTOR = "script:containsData(const idc)"
+        private val HUNTER_OBFUSCATION_REGEX = Regex(
+            """eval\s*\(\s*(?:/\*[^*]*\*/\s*)?function\s*\(\s*l\s*,\s*y\s*,\s*d\s*,\s*m\s*,\s*e\s*,\s*r\s*\)\s*\{[\s\S]*?\}\s*\(\s*"([^"]+)"\s*,\s*\d+\s*,\s*"([^"]+)"\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*\d+\s*\)\s*\)""",
+        )
+        private val SML_PARAM_REGEX = Regex(
+            """(?:const|let|var)?\s*sml\s*=\s*["']([^"']+)["']""",
+        )
+        private val SME_PARAM_REGEX = Regex(
+            """(?:const|let|var)?\s*sme\s*=\s*["']([^"']+)["']""",
+        )
+        private val CHAPTER_INFO_REGEX = Regex(
+            """(?:const|let|var)\s+idc\s*=\s*(\d+)""",
+        )
         private const val PAGE_LIST_URL = "https://bqj.{topDomain}/lel/{chapterId}.json"
         private const val REQUEST_BODY = """{"a":"{sme}","b":"{sml}","c":"{fingerprint}"}"""
         private const val LEL_TOKEN = "yf"
