@@ -130,7 +130,7 @@ jobs:
       - name: Checkout repo branch
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          repository: BilaC0de/extensions
+          repository: BilaC0de/extensions-manga
           token: ${{ secrets.BOT_PAT }}
           ref: repo-manga
           path: repo
@@ -150,9 +150,9 @@ jobs:
             git add .
             git commit -m "Update extensions repo"
             git push origin repo-manga
-            curl https://purge.jsdelivr.net/gh/BilaC0de/extensions@repo-manga/index.min.json
-            curl https://purge.jsdelivr.net/gh/BilaC0de/extensions@repo-manga/index.json
-            curl https://purge.jsdelivr.net/gh/BilaC0de/extensions@repo-manga/index.pb
+            curl https://purge.jsdelivr.net/gh/BilaC0de/extensions-manga@repo-manga/index.min.json
+            curl https://purge.jsdelivr.net/gh/BilaC0de/extensions-manga@repo-manga/index.json
+            curl https://purge.jsdelivr.net/gh/BilaC0de/extensions-manga@repo-manga/index.pb
           else
             echo "No changes to commit"
           fi
