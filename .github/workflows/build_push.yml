@@ -132,7 +132,7 @@ jobs:
         with:
           repository: BilaC0de/extensions
           token: ${{ secrets.BOT_PAT }}
-          ref: repo
+          ref: repo-manga
           path: repo
           persist-credentials: true
 
@@ -149,10 +149,10 @@ jobs:
           if [ -n "$(git status --porcelain)" ]; then
             git add .
             git commit -m "Update extensions repo"
-            git push
-            curl https://purge.jsdelivr.net/gh/keiyoushi/extensions@repo/index.min.json
-            curl https://purge.jsdelivr.net/gh/keiyoushi/extensions@repo/index.json
-            curl https://purge.jsdelivr.net/gh/keiyoushi/extensions@repo/index.pb
+            git push origin repo-manga
+            curl https://purge.jsdelivr.net/gh/BilaC0de/extensions@repo-manga/index.min.json
+            curl https://purge.jsdelivr.net/gh/BilaC0de/extensions@repo-manga/index.json
+            curl https://purge.jsdelivr.net/gh/BilaC0de/extensions@repo-manga/index.pb
           else
             echo "No changes to commit"
           fi
