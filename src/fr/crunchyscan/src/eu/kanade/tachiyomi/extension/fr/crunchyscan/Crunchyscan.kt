@@ -44,8 +44,7 @@ abstract class Crunchyscan : HttpSource() {
         return csrfToken
     }
 
-    private fun headersWithCsrf(): Headers =
-        headers.newBuilder().add("X-CSRF-TOKEN", fetchCsrfToken()).add("X-Requested-With", "XMLHttpRequest").build()
+    private fun headersWithCsrf(): Headers = headers.newBuilder().add("X-CSRF-TOKEN", fetchCsrfToken()).add("X-Requested-With", "XMLHttpRequest").build()
 
     // ============================================
     // POPULAR MANGA
