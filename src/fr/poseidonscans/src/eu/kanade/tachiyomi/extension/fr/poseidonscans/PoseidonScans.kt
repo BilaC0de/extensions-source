@@ -28,7 +28,9 @@ import java.util.Date
 import java.util.Locale
 
 @Source
-abstract class PoseidonScans : HttpSource(), ConfigurableSource {
+abstract class PoseidonScans :
+    HttpSource(),
+    ConfigurableSource {
 
     override val supportsLatest = true
 
@@ -269,10 +271,11 @@ abstract class PoseidonScans : HttpSource(), ConfigurableSource {
         MaxChaptersFilter(),
     )
 
-    private class SortFilter : Filter.Select<String>(
-        "Tri",
-        arrayOf("Ajout Récent (Série)", "Dernier Chapitre", "Plus de chapitres", "Popularité", "Ordre alphabétique"),
-    ) {
+    private class SortFilter :
+        Filter.Select<String>(
+            "Tri",
+            arrayOf("Ajout Récent (Série)", "Dernier Chapitre", "Plus de chapitres", "Popularité", "Ordre alphabétique"),
+        ) {
         fun getValue() = when (state) {
             1 -> "latest_chapter"
             2 -> "most_chapters"
@@ -282,10 +285,11 @@ abstract class PoseidonScans : HttpSource(), ConfigurableSource {
         }
     }
 
-    private class StatusFilter : Filter.Select<String>(
-        "Statut",
-        arrayOf("Tous", "En cours", "Terminé", "En pause", "Annulé"),
-    ) {
+    private class StatusFilter :
+        Filter.Select<String>(
+            "Statut",
+            arrayOf("Tous", "En cours", "Terminé", "En pause", "Annulé"),
+        ) {
         fun getValue() = when (state) {
             1 -> "en cours"
             2 -> "terminé"
@@ -296,47 +300,49 @@ abstract class PoseidonScans : HttpSource(), ConfigurableSource {
     }
 
     private class TypeCheckBox(name: String) : Filter.CheckBox(name)
-    private class TypeFilter : Filter.Group<TypeCheckBox>(
-        "Type",
-        listOf(
-            TypeCheckBox("MANGA"),
-            TypeCheckBox("MANHUA"),
-            TypeCheckBox("MANHWA"),
-            TypeCheckBox("WEBTOON"),
-        ),
-    ) {
+    private class TypeFilter :
+        Filter.Group<TypeCheckBox>(
+            "Type",
+            listOf(
+                TypeCheckBox("MANGA"),
+                TypeCheckBox("MANHUA"),
+                TypeCheckBox("MANHWA"),
+                TypeCheckBox("WEBTOON"),
+            ),
+        ) {
         fun getValues() = state.filter { it.state }.map { it.name }
     }
 
     private class GenreCheckBox(name: String) : Filter.CheckBox(name)
-    private class GenreFilter : Filter.Group<GenreCheckBox>(
-        "Genres",
-        listOf(
-            GenreCheckBox("Délinquant"),
-            GenreCheckBox("Détective"),
-            GenreCheckBox("Drama"),
-            GenreCheckBox("Ecchi"),
-            GenreCheckBox("Fantaisie"),
-            GenreCheckBox("Fantastique"),
-            GenreCheckBox("Mystère"),
-            GenreCheckBox("Necromancer"),
-            GenreCheckBox("Portail/Donjon"),
-            GenreCheckBox("Psychologique"),
-            GenreCheckBox("Réincarnation"),
-            GenreCheckBox("Regression"),
-            GenreCheckBox("Romance"),
-            GenreCheckBox("Shojo"),
-            GenreCheckBox("Shonen"),
-            GenreCheckBox("Sports"),
-            GenreCheckBox("Super pouvoirs"),
-            GenreCheckBox("Surnaturel"),
-            GenreCheckBox("Systeme"),
-            GenreCheckBox("Tour"),
-            GenreCheckBox("Tragique"),
-            GenreCheckBox("Vengeance"),
-            GenreCheckBox("Vie scolaire"),
-        ),
-    ) {
+    private class GenreFilter :
+        Filter.Group<GenreCheckBox>(
+            "Genres",
+            listOf(
+                GenreCheckBox("Délinquant"),
+                GenreCheckBox("Détective"),
+                GenreCheckBox("Drama"),
+                GenreCheckBox("Ecchi"),
+                GenreCheckBox("Fantaisie"),
+                GenreCheckBox("Fantastique"),
+                GenreCheckBox("Mystère"),
+                GenreCheckBox("Necromancer"),
+                GenreCheckBox("Portail/Donjon"),
+                GenreCheckBox("Psychologique"),
+                GenreCheckBox("Réincarnation"),
+                GenreCheckBox("Regression"),
+                GenreCheckBox("Romance"),
+                GenreCheckBox("Shojo"),
+                GenreCheckBox("Shonen"),
+                GenreCheckBox("Sports"),
+                GenreCheckBox("Super pouvoirs"),
+                GenreCheckBox("Surnaturel"),
+                GenreCheckBox("Systeme"),
+                GenreCheckBox("Tour"),
+                GenreCheckBox("Tragique"),
+                GenreCheckBox("Vengeance"),
+                GenreCheckBox("Vie scolaire"),
+            ),
+        ) {
         fun getValues() = state.filter { it.state }.map { it.name }
     }
 

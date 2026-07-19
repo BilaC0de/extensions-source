@@ -217,29 +217,25 @@ abstract class Crunchyscan : HttpSource() {
         }
     }
 
-    private fun isDownloadContext(): Boolean {
-        return Exception().stackTrace.any {
-            it.className.contains("eu.kanade.tachiyomi.data.download", ignoreCase = true) || it.className.contains(
-                "Downloader",
-                ignoreCase = true,
-            )
-        }
+    private fun isDownloadContext(): Boolean = Exception().stackTrace.any {
+        it.className.contains("eu.kanade.tachiyomi.data.download", ignoreCase = true) || it.className.contains(
+            "Downloader",
+            ignoreCase = true,
+        )
     }
 
-    private fun tryOpenWebView(url: String): Boolean {
-        return try {
-            val context = applicationContext
-            val intent = Intent().apply {
-                component = ComponentName(context, "eu.kanade.tachiyomi.ui.webview.WebViewActivity")
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                putExtra("url_key", url)
-                putExtra("source_key", id)
-            }
-            context.startActivity(intent)
-            true
-        } catch (_: Exception) {
-            false
+    private fun tryOpenWebView(url: String): Boolean = try {
+        val context = applicationContext
+        val intent = Intent().apply {
+            component = ComponentName(context, "eu.kanade.tachiyomi.ui.webview.WebViewActivity")
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            putExtra("url_key", url)
+            putExtra("source_key", id)
         }
+        context.startActivity(intent)
+        true
+    } catch (_: Exception) {
+        false
     }
 
     override fun imageUrlRequest(page: Page): Request {
