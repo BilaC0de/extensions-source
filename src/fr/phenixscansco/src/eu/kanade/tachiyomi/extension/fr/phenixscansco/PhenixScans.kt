@@ -1,6 +1,10 @@
 package eu.kanade.tachiyomi.extension.fr.phenixscansco
 
+import android.content.SharedPreferences
+import androidx.preference.EditTextPreference
+import androidx.preference.PreferenceScreen
 import eu.kanade.tachiyomi.network.GET
+import eu.kanade.tachiyomi.source.ConfigurableSource
 import eu.kanade.tachiyomi.source.model.FilterList
 import eu.kanade.tachiyomi.source.model.MangasPage
 import eu.kanade.tachiyomi.source.model.Page
@@ -8,6 +12,7 @@ import eu.kanade.tachiyomi.source.model.SChapter
 import eu.kanade.tachiyomi.source.model.SManga
 import eu.kanade.tachiyomi.source.online.HttpSource
 import keiyoushi.annotation.Source
+import keiyoushi.utils.getPreferencesLazy
 import keiyoushi.utils.parseAs
 import keiyoushi.utils.tryParse
 import kotlinx.serialization.json.float
@@ -18,9 +23,28 @@ import java.text.SimpleDateFormat
 import java.util.Locale
 
 @Source
-abstract class PhenixScans : HttpSource() {
-    private val apiBaseUrl = "https://api.phenix-scans.co/api"
+abstract class PhenixScans :
+    HttpSource(),
+    ConfigurableSource {
+
     override val supportsLatest = true
+
+    private val preferences: SharedPreferences by getPreferencesLazy()
+
+    private val defaultDomain = "https://phenix-scans.co"
+
+    // Le domaine "site" configurable par l'utilisateur
+    private val domain: String
+        get() = preferences.getString(DOMAIN_PREF, defaultDomain)!!.trimEnd('/')
+
+    // L'API vit sur un sous-domaine dérivé du domaine du site (api.<domaine>)
+    private val apiBaseUrl: String
+        get() = domain.replaceFirst("https://", "https://api.") + "/api"
+
+    // baseUrl pointe sur /manga : c'est la page utilisée pour "Ouvrir dans le WebView"
+    // depuis l'écran Browse, et c'est elle qui doit être présentée à l'utilisateur.
+    override val baseUrl: String
+        get() = "$domain/manga"
 
     private val simpleDateFormat = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.FRENCH)
 
@@ -33,7 +57,7 @@ abstract class PhenixScans : HttpSource() {
         val mangas = data.top.map {
             SManga.create().apply {
                 title = it.title
-                thumbnail_url = "${apiBaseUrl.substringBeforeLast("/api")}/${it.coverImage}" // Possibility of using ?width=75 and cdn.[...]/?url=
+                thumbnail_url = "$domain/${it.coverImage}" // Possibility of using ?width=75 and cdn.[...]/?url=
                 url = it.slug
             }
         }
@@ -134,7 +158,7 @@ abstract class PhenixScans : HttpSource() {
 
         return SManga.create().apply {
             title = data.manga.title
-            thumbnail_url = "${apiBaseUrl.substringBeforeLast("/api")}/${data.manga.coverImage}"
+            thumbnail_url = "$domain/${data.manga.coverImage}"
             url = data.manga.slug
             description = data.manga.synopsis
             status = when (data.manga.status) {
@@ -146,7 +170,9 @@ abstract class PhenixScans : HttpSource() {
         }
     }
 
-    override fun getMangaUrl(manga: SManga): String = "$baseUrl/manga/${manga.url}"
+    // baseUrl inclut déjà "/manga" (nécessaire pour le WebView de la source),
+    // donc on ne le réutilise pas ici pour éviter "/manga/manga/...".
+    override fun getMangaUrl(manga: SManga): String = "$domain/manga/${manga.url}"
 
     // ============================== Chapters ==============================
 
@@ -170,7 +196,7 @@ abstract class PhenixScans : HttpSource() {
     override fun getChapterUrl(chapter: SChapter): String {
         val slug = chapter.url.substringBeforeLast("/")
         val chapterNumber = chapter.url.substringAfterLast("/")
-        return "$baseUrl/manga/$slug/chapitre/$chapterNumber"
+        return "$domain/manga/$slug/chapitre/$chapterNumber"
     }
 
     // =============================== Pages ================================
@@ -190,7 +216,24 @@ abstract class PhenixScans : HttpSource() {
         val data = response.parseAs<ChapterContentDto>()
 
         return data.chapter.images.mapIndexed { index, url ->
-            Page(index, imageUrl = "${apiBaseUrl.substringBeforeLast("/api")}/$url")
+            Page(index, imageUrl = "$domain/$url")
         }
+    }
+
+    // ========================== Preferences ============================
+
+    override fun setupPreferenceScreen(screen: PreferenceScreen) {
+        EditTextPreference(screen.context).apply {
+            key = DOMAIN_PREF
+            title = "URL du site"
+            summary = "Modifier si le site change de domaine.\nActuellement : $domain"
+            setDefaultValue(defaultDomain)
+            dialogTitle = "URL du site"
+            dialogMessage = "Entrez l'URL complète, ex : https://phenix-scans.co"
+        }.also(screen::addPreference)
+    }
+
+    companion object {
+        private const val DOMAIN_PREF = "pref_domain"
     }
 }
