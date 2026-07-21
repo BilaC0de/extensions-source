@@ -29,7 +29,7 @@ def aapt() -> Path:
 # emitted by each assembleRelease.
 ARTIFACTS_DIR = Path.home() / "apk-artifacts"
 
-# The checked-out repository branch (repo-manga) we publish into.
+# The checked-out `repo` branch we publish into (the working directory).
 REPO_DIR = Path.cwd()
 REPO_APK_DIR = REPO_DIR / "apk"
 REPO_JAR_DIR = REPO_DIR / "jar"
@@ -119,8 +119,12 @@ for info_file in ARTIFACTS_DIR.glob("**/keiyoushi-source-info.json"):
     )
 
 # Merge with the already-published index, dropping the deleted/rebuilt modules.
-with REPO_DIR.joinpath("index.json").open() as f:
-    remote_proto = json_format.Parse(f.read(), index_pb2.Index())
+index_path = REPO_DIR.joinpath("index.json")
+if index_path.exists():
+    with index_path.open(encoding="utf-8") as f:
+        remote_proto = json_format.Parse(f.read(), index_pb2.Index())
+else:
+    remote_proto = index_pb2.Index()
 
 all_extensions = [
     ext
@@ -131,11 +135,11 @@ all_extensions.extend(new_extensions)
 all_extensions.sort(key=lambda ext: ext.packageName)
 
 index = index_pb2.Index(
-    name="BilaC0de Extensions",
+    name="BilaC0de Manga Extensions",
     badgeLabel="BILA",
     signingKey="a0eda0489dc6b3e8580f8c55957597f0a2ddb238c12d4e315f6c15893d9b2611",
     contact=index_pb2.Contact(
-        website="https://github.com/BilaC0de"
+        website="https://github.com/BilaC0de/extensions-manga",
     ),
     extensionList=index_pb2.ExtensionList(extensions=all_extensions),
 )
@@ -159,9 +163,9 @@ def get_legacy_lang(ext) -> str:
     if len(ext.sources) == 1:
         source_language = ext.sources[0].language
         if (
-            source_language != lang
-            and source_language not in {"all", "other"}
-            and lang not in {"all", "other"}
+                source_language != lang
+                and source_language not in {"all", "other"}
+                and lang not in {"all", "other"}
         ):
             lang = source_language
     return lang
@@ -194,7 +198,7 @@ with REPO_DIR.joinpath("index.min.json").open("w", encoding="utf-8") as f:
 
 with REPO_DIR.joinpath("index.html").open("w", encoding="utf-8") as f:
     f.write(
-        '<!DOCTYPE html>\n<html>\n<head>\n<meta charset="UTF-8">\n<title>apks</title>\n</head>\n<body>\n<pre>\n'
+        '<!DOCTYPE html>\n<html>\n<head>\n<meta charset="UTF-8">\n<title>BilaC0de Manga Extensions</title>\n</head>\n<body>\n<pre>\n'
     )
     for ext in all_extensions:
         apk_escaped = html.escape(ext.resources.apkUrl)
