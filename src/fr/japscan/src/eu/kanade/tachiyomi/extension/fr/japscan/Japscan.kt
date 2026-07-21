@@ -101,7 +101,8 @@ abstract class Japscan :
         )
         val dateFormat = SimpleDateFormat("dd MMM yyyy", Locale.US)
 
-        private const val SHOW_SPOILER_CHAPTERS_TITLE = "Les chapitres en Anglais ou non traduit sont upload en tant que \" Spoilers \" sur Japscan"
+        private const val SHOW_SPOILER_CHAPTERS_TITLE =
+            "Les chapitres en Anglais ou non traduit sont upload en tant que \" Spoilers \" sur Japscan"
         private const val SHOW_SPOILER_CHAPTERS = "JAPSCAN_SPOILER_CHAPTERS"
         private val prefsEntries = arrayOf("Montrer uniquement les chapitres traduit en Français", "Montrer les chapitres spoiler")
         private val prefsEntryValues = arrayOf("hide", "show")
@@ -321,7 +322,9 @@ abstract class Japscan :
                 // Find the first attribute whose value matches the chapter URL pattern
                 val attrMatch = el.attributes().asList().firstOrNull { attr ->
                     val value = attr.value
-                    value.startsWith("/manga/") || value.startsWith("/manhua/") || value.startsWith("/manhwa/") || value.startsWith("/bd/") || value.startsWith("/comic/")
+                    value.startsWith("/manga/") || value.startsWith("/manhua/") || value.startsWith("/manhwa/") || value.startsWith("/bd/") || value.startsWith(
+                        "/comic/",
+                    )
                 }
                 if (attrMatch != null) {
                     val name = el.ownText().ifBlank { el.text() }
@@ -392,6 +395,10 @@ abstract class Japscan :
         val matchResult = captchaRegex.find(pageContent)
 
         if (matchResult != null) {
+            if (isDownloadContext()) {
+                throw Exception("Protégé par captcha, non téléchargeable")
+            }
+
             try {
                 val intent = Intent().apply {
                     component = ComponentName(context, "eu.kanade.tachiyomi.ui.webview.WebViewActivity")
@@ -636,6 +643,11 @@ abstract class Japscan :
     override fun pageListParse(response: Response): List<Page> = throw UnsupportedOperationException("Not used")
 
     override fun imageUrlParse(response: Response): String = throw UnsupportedOperationException("Not used")
+
+    private fun isDownloadContext(): Boolean = Exception().stackTrace.any {
+        it.className.contains("eu.kanade.tachiyomi.data.download", ignoreCase = true) ||
+            it.className.contains("Downloader", ignoreCase = true)
+    }
 
     // Filters
     private class TextField(name: String) : Filter.Text(name)
