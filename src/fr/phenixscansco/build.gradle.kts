@@ -6,9 +6,9 @@ plugins {
 
 keiyoushi {
     name = "PhenixScans (unoriginal)"
-    versionCode = 1
+    versionCode = 2
     contentWarning = ContentWarning.SAFE
-    libVersion = "1.5"
+    libVersion = "1.4"
 
     source {
         name = "Phenix Scans (unoriginal)"
