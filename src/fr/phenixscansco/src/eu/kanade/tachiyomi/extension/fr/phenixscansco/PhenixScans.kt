@@ -41,6 +41,11 @@ abstract class PhenixScans :
     private val apiBaseUrl: String
         get() = domain.replaceFirst("https://", "https://api.") + "/api"
 
+    // Les images (couvertures, pages) vivent sur le même sous-domaine que l'API,
+    // mais SANS le suffixe "/api" (ex: https://api.<domaine>/uploads/covers/...)
+    private val uploadsBase: String
+        get() = domain.replaceFirst("https://", "https://api.")
+
     // baseUrl pointe sur /manga : c'est la page utilisée pour "Ouvrir dans le WebView"
     // depuis l'écran Browse, et c'est elle qui doit être présentée à l'utilisateur.
     override val baseUrl: String
@@ -57,7 +62,7 @@ abstract class PhenixScans :
         val mangas = data.top.map {
             SManga.create().apply {
                 title = it.title
-                thumbnail_url = "$domain/${it.coverImage}" // Possibility of using ?width=75 and cdn.[...]/?url=
+                thumbnail_url = "$uploadsBase/${it.coverImage}"
                 url = it.slug
             }
         }
@@ -75,7 +80,7 @@ abstract class PhenixScans :
     private fun parseMangaList(mangaList: List<LatestMangaItemDto>): List<SManga> = mangaList.map {
         SManga.create().apply {
             title = it.title
-            thumbnail_url = "$apiBaseUrl/${it.coverImage}" // Possibility of using ?width=75
+            thumbnail_url = "$uploadsBase/${it.coverImage}"
             url = it.slug
         }
     }
@@ -95,9 +100,7 @@ abstract class PhenixScans :
     override fun searchMangaRequest(page: Int, query: String, filters: FilterList): Request {
         if (query.isNotEmpty()) {
             // No limits here
-            val apiUrl = "$apiBaseUrl/front/manga/search".toHttpUrl().newBuilder()
-                .addQueryParameter("query", query)
-                .build()
+            val apiUrl = "$apiBaseUrl/front/manga/search".toHttpUrl().newBuilder().addQueryParameter("query", query).build()
             return GET(apiUrl, headers)
         }
 
@@ -109,9 +112,7 @@ abstract class PhenixScans :
                 }
 
                 is GenreFilter -> {
-                    val genres = filter.state
-                        .filter { it.state }
-                        .map { it.id }
+                    val genres = filter.state.filter { it.state }.map { it.id }
 
                     url.addQueryParameter("genre", genres.joinToString(","))
                 }
@@ -158,7 +159,7 @@ abstract class PhenixScans :
 
         return SManga.create().apply {
             title = data.manga.title
-            thumbnail_url = "$domain/${data.manga.coverImage}"
+            thumbnail_url = "$uploadsBase/${data.manga.coverImage}"
             url = data.manga.slug
             description = data.manga.synopsis
             status = when (data.manga.status) {
@@ -181,16 +182,14 @@ abstract class PhenixScans :
     override fun chapterListParse(response: Response): List<SChapter> {
         val data = response.parseAs<MangaDetailDto>()
 
-        return data.chapters
-            .filter { it.price == 0 }
-            .map { chapterDto ->
-                SChapter.create().apply {
-                    chapter_number = chapterDto.number.float
-                    date_upload = simpleDateFormat.tryParse(chapterDto.createdAt)
-                    name = "Chapter ${chapterDto.number}"
-                    url = "${data.manga.slug}/${chapterDto.number}"
-                }
+        return data.chapters.filter { it.price == 0 }.map { chapterDto ->
+            SChapter.create().apply {
+                chapter_number = chapterDto.number.float
+                date_upload = simpleDateFormat.tryParse(chapterDto.createdAt)
+                name = "Chapter ${chapterDto.number}"
+                url = "${data.manga.slug}/${chapterDto.number}"
             }
+        }
     }
 
     override fun getChapterUrl(chapter: SChapter): String {
@@ -216,7 +215,7 @@ abstract class PhenixScans :
         val data = response.parseAs<ChapterContentDto>()
 
         return data.chapter.images.mapIndexed { index, url ->
-            Page(index, imageUrl = "$domain/$url")
+            Page(index, imageUrl = "$uploadsBase/$url")
         }
     }
 
