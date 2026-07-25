@@ -26,6 +26,7 @@ import keiyoushi.utils.getPreferencesLazy
 import keiyoushi.utils.parseAs
 import okhttp3.CookieJar
 import okhttp3.Headers
+import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.Interceptor
 import okhttp3.MediaType.Companion.toMediaType
@@ -408,9 +409,7 @@ abstract class ScanManga :
 
         val requestBody = injectVariables(REQUEST_BODY, availableVariables)
         val pageListUrl = injectVariables(PAGE_LIST_URL, availableVariables)
-        val requestHeaders =
-            headers.newBuilder().add("Origin", "${documentUrl.scheme}://${documentUrl.host}").add("Referer", documentUrl.toString())
-                .add("Token", LEL_TOKEN).build()
+        val requestHeaders = buildLelHeaders(documentUrl)
 
         val pageListRequest = POST(
             url = pageListUrl,
@@ -426,6 +425,36 @@ abstract class ScanManga :
         }
 
         return lelResponse.generateImageUrls().map { Page(it.first, imageUrl = it.second) }
+    }
+
+    // The real site's lel.js issues this as a same-site fetch() call, not a page navigation -
+    // it needs Client Hints (sec-ch-ua*) and cors-style sec-fetch-* values that OkHttp never
+    // sends on its own, and none of the navigation-only headers from headersBuilder() (those
+    // caused the 404s: a real fetch() never sends upgrade-insecure-requests, and Accept there
+    // is */*, not the text/html navigation list). Built from scratch rather than
+    // headers.newBuilder() so none of that leaks in.
+    private fun buildLelHeaders(documentUrl: HttpUrl): Headers {
+        val userAgent = headers["User-Agent"].orEmpty()
+        val chromeMajor = CHROME_MAJOR_VERSION_REGEX.find(userAgent)?.groupValues?.get(1) ?: "150"
+        val siteOrigin = "${documentUrl.scheme}://${documentUrl.host}"
+
+        return Headers.Builder()
+            .add("User-Agent", userAgent)
+            .add("Accept", "*/*")
+            .add("Accept-Language", "fr-FR,fr;q=0.9,en;q=0.8")
+            .add("sec-ch-ua", "\"Not;A=Brand\";v=\"8\", \"Chromium\";v=\"$chromeMajor\", \"Google Chrome\";v=\"$chromeMajor\"")
+            .add("sec-ch-ua-mobile", "?1")
+            .add("sec-ch-ua-platform", "\"Android\"")
+            .add("sec-fetch-site", "same-site")
+            .add("sec-fetch-mode", "cors")
+            .add("sec-fetch-dest", "empty")
+            .add("Origin", siteOrigin)
+            .add("Referer", "$siteOrigin/")
+            .add("Token", LEL_TOKEN)
+            .add("source", documentUrl.toString())
+            .add("Content-Type", "application/json; charset=UTF-8")
+            .add("priority", "u=1, i")
+            .build()
     }
 
     // Page
@@ -534,6 +563,7 @@ abstract class ScanManga :
         private val CHAPTER_INFO_REGEX = Regex(
             """(?:const|let|var)\s+idc\s*=\s*(\d+)""",
         )
+        private val CHROME_MAJOR_VERSION_REGEX = Regex("""Chrome/(\d+)""")
         private const val PAGE_LIST_URL = "https://bqj.{topDomain}/lel/{chapterId}.json"
         private const val REQUEST_BODY = """{"a":"{sme}","b":"{sml}","c":"{fingerprint}"}"""
         private const val LEL_TOKEN = "yf"
