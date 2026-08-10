@@ -48,8 +48,11 @@ abstract class ScanManga :
     HttpSource(),
     ConfigurableSource {
 
-    private val domain = baseUrl.toHttpUrl().host
-    private val baseImageUrl = "https://static.scan-manga.com/img/manga"
+    // Registrable domain (baseUrl may be a subdomain like "m."), used to build the
+    // static.<domain> image host and bqj.<domain> search/API host without duplicating
+    // the literal domain string everywhere. Falls back to the raw host if resolution fails.
+    private val domain = baseUrl.toHttpUrl().topPrivateDomain() ?: baseUrl.toHttpUrl().host
+    private val baseImageUrl = "https://static.$domain/img/manga"
 
     override val supportsLatest = true
 
@@ -83,12 +86,12 @@ abstract class ScanManga :
     override fun popularMangaRequest(page: Int): Request = GET("$baseUrl/TOP-Manga-Webtoon-45.html", headers)
 
     override fun popularMangaParse(response: Response): MangasPage {
-        val mangas = response.asJsoup().select("#carouselTOPContainer > div.top").map { element ->
-            SManga.create().apply {
-                val titleElement = element.selectFirst("a.atop")!!
+        val mangas = response.asJsoup().select("#carouselTOPContainer > div.top").mapNotNull { element ->
+            val titleElement = element.selectFirst("a.atop") ?: return@mapNotNull null
 
+            SManga.create().apply {
                 title = titleElement.text()
-                setUrlWithoutDomain(titleElement.attr("href"))
+                setUrlWithoutDomain(titleElement.absUrl("href"))
                 thumbnail_url = element.extractThumbnail()
             }
         }
@@ -102,13 +105,12 @@ abstract class ScanManga :
     override fun latestUpdatesParse(response: Response): MangasPage {
         val document = response.asJsoup()
 
-        val mangas = document.select("#content_news .publi").map { element ->
+        val mangas = document.select("#content_news .publi").mapNotNull { element ->
+            val mangaElement = element.selectFirst("a.l_manga") ?: return@mapNotNull null
+
             SManga.create().apply {
-                val mangaElement = element.selectFirst("a.l_manga")!!
-
                 title = mangaElement.text()
-                setUrlWithoutDomain(mangaElement.attr("href"))
-
+                setUrlWithoutDomain(mangaElement.absUrl("href"))
                 thumbnail_url = element.extractThumbnail()
             }
         }
@@ -136,7 +138,7 @@ abstract class ScanManga :
         query: String,
         filters: FilterList,
     ): Request {
-        val url = "https://bqj.scan-manga.com/search/quick.json"
+        val url = "https://bqj.$domain/search/quick.json"
             .toHttpUrl()
             .newBuilder()
             .addQueryParameter("term", query)
@@ -145,8 +147,8 @@ abstract class ScanManga :
         return GET(
             url,
             headers.newBuilder()
-                .set("Origin", "https://m.scan-manga.com")
-                .set("Referer", "https://m.scan-manga.com/")
+                .set("Origin", baseUrl)
+                .set("Referer", "$baseUrl/")
                 .set("Content-Type", "application/json; charset=UTF-8")
                 .build(),
         )
@@ -190,15 +192,15 @@ abstract class ScanManga :
                 else -> SManga.UNKNOWN
             }
 
-            thumbnail_url = document.select("div.full_img_serie img[itemprop=image]").attr("src")
+            thumbnail_url = document.select("div.full_img_serie img[itemprop=image]").attr("abs:src")
         }
     }
 
     // Chapters
     override fun chapterListParse(response: Response): List<SChapter> {
         val document = response.asJsoup()
-        return document.select("div.chapt_m").map { element ->
-            val linkEl = element.selectFirst("td.publimg span.i a")!!
+        return document.select("div.chapt_m").mapNotNull { element ->
+            val linkEl = element.selectFirst("td.publimg span.i a") ?: return@mapNotNull null
             val titleEl = element.selectFirst("td.publititle")
 
             val chapterName = linkEl.text()
@@ -387,7 +389,8 @@ abstract class ScanManga :
     // extracted from the initial chapter page response, so it can't be expressed as a plain
     // pageListRequest() — the second call is inherently dependent on the first one's parsed output.
     private fun parsePageList(document: Document): List<Page> {
-        val packedScript = document.selectFirst(PACKED_SCRIPT_SELECTOR)!!.data()
+        val packedScript = document.selectFirst(PACKED_SCRIPT_SELECTOR)?.data()
+            ?: error("Failed to find packed reader script.")
         val unpackedScript = decodeHunter(packedScript)
 
         val (sml) = SML_PARAM_REGEX.find(unpackedScript)?.destructured ?: error("Failed to extract sml parameter.")
@@ -535,7 +538,8 @@ abstract class ScanManga :
                 "Enter your GPU renderer string here. This is used to bypass blocking based on WebGL fingerprinting. You can find your GPU renderer by visiting a site like https://www.browserleaks.com/webgl using Google Chrome on Android. Make sure to enter the exact string as shown on the site, without any extra spaces or characters."
 
             setOnPreferenceChangeListener { _, newValue ->
-                preferences.edit().putString(key, newValue as String).commit()
+                preferences.edit().putString(key, newValue as String).apply()
+                true
             }
         }.also { screen.addPreference(it) }
     }
