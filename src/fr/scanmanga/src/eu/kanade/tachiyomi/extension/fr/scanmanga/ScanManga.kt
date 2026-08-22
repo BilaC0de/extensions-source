@@ -28,6 +28,7 @@ import okhttp3.CookieJar
 import okhttp3.Headers
 import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrl
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.Interceptor
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
@@ -201,14 +202,28 @@ abstract class ScanManga :
         val document = response.asJsoup()
         return document.select("div.chapt_m").mapNotNull { element ->
             val linkEl = element.selectFirst("td.publimg span.i a") ?: return@mapNotNull null
-            val titleEl = element.selectFirst("td.publititle")
+            val titleEl = element.selectFirst("td.publititle, td.publititle_ext")
 
-            val chapterName = linkEl.text()
+            val chapterName = linkEl.text().replaceFirst(CHAPTER_PREFIX_REGEX, "Chapitre ")
             val extraTitle = titleEl?.text()
+            val href = linkEl.absUrl("href")
+            // Licensed chapters link to a third-party reader (e.g. lezhinfr.com) instead of
+            // this site - detected by comparing the link's domain to our own.
+            val isLicensed = href.toHttpUrlOrNull()?.topPrivateDomain() != domain
 
             SChapter.create().apply {
-                name = if (!extraTitle.isNullOrEmpty()) "$chapterName - $extraTitle" else chapterName
-                setUrlWithoutDomain(linkEl.absUrl("href"))
+                name = buildString {
+                    if (isLicensed) append("🔒 ")
+                    append(chapterName)
+                    if (!extraTitle.isNullOrEmpty()) append(" - $extraTitle")
+                }
+                if (isLicensed) {
+                    // Keep the absolute URL as-is: setUrlWithoutDomain() would strip the
+                    // (foreign) host and silently turn it into a path on our own domain.
+                    url = href
+                } else {
+                    setUrlWithoutDomain(href)
+                }
             }
         }
     }
@@ -272,7 +287,17 @@ abstract class ScanManga :
         return finalJsonStr.parseAs<UrlPayload>()
     }
 
+    // Licensed chapters have their absolute (foreign) URL stored directly in chapter.url,
+    // instead of a relative path - see chapterListParse.
+    private fun SChapter.isLicensed() = url.startsWith("http")
+
+    override fun getChapterUrl(chapter: SChapter): String = if (chapter.isLicensed()) chapter.url else super.getChapterUrl(chapter)
+
     override fun fetchPageList(chapter: SChapter): Observable<List<Page>> {
+        if (chapter.isLicensed()) {
+            return Observable.error(Exception("Ce chapitre est licencié."))
+        }
+
         val context = applicationContext
         val chapterUrl = "$baseUrl${chapter.url}"
         val isReader = Exception().stackTrace.any { it.className.contains("reader") }
@@ -554,6 +579,7 @@ abstract class ScanManga :
 
     companion object {
         private const val LAZY_PLACEHOLDER = "https://static.scan-manga.com/img/lazy_130x45.jpg"
+        private val CHAPTER_PREFIX_REGEX = Regex("""^Ch\.\s*""")
         private const val PACKED_SCRIPT_SELECTOR = "script:containsData(const idc)"
         private val HUNTER_OBFUSCATION_REGEX = Regex(
             """eval\s*\(\s*(?:/\*[^*]*\*/\s*)?function\s*\(\s*l\s*,\s*y\s*,\s*d\s*,\s*m\s*,\s*e\s*,\s*r\s*\)\s*\{[\s\S]*?\}\s*\(\s*"([^"]+)"\s*,\s*\d+\s*,\s*"([^"]+)"\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*\d+\s*\)\s*\)""",
