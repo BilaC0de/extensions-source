@@ -10,20 +10,22 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.preference.EditTextPreference
 import androidx.preference.PreferenceScreen
-import eu.kanade.tachiyomi.network.GET
-import eu.kanade.tachiyomi.network.POST
 import eu.kanade.tachiyomi.source.ConfigurableSource
 import eu.kanade.tachiyomi.source.model.FilterList
 import eu.kanade.tachiyomi.source.model.MangasPage
 import eu.kanade.tachiyomi.source.model.Page
 import eu.kanade.tachiyomi.source.model.SChapter
 import eu.kanade.tachiyomi.source.model.SManga
-import eu.kanade.tachiyomi.source.online.HttpSource
+import eu.kanade.tachiyomi.source.model.SMangaUpdate
+import eu.kanade.tachiyomi.util.asJsoup
 import keiyoushi.annotation.Source
+import keiyoushi.network.get
+import keiyoushi.network.post
+import keiyoushi.source.KeiSource
 import keiyoushi.utils.applicationContext
-import keiyoushi.utils.asJsoup
 import keiyoushi.utils.getPreferencesLazy
 import keiyoushi.utils.parseAs
+import kotlinx.coroutines.delay
 import okhttp3.CookieJar
 import okhttp3.Headers
 import okhttp3.HttpUrl
@@ -32,13 +34,10 @@ import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.Interceptor
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
-import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
-import okhttp3.Response
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
-import rx.Observable
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
@@ -46,7 +45,7 @@ import java.util.zip.Inflater
 
 @Source
 abstract class ScanManga :
-    HttpSource(),
+    KeiSource(),
     ConfigurableSource {
 
     // Registrable domain (baseUrl may be a subdomain like "m."), used to build the
@@ -54,8 +53,6 @@ abstract class ScanManga :
     // the literal domain string everywhere. Falls back to the raw host if resolution fails.
     private val domain = baseUrl.toHttpUrl().topPrivateDomain() ?: baseUrl.toHttpUrl().host
     private val baseImageUrl = "https://static.$domain/img/manga"
-
-    override val supportsLatest = true
 
     private val preferences by getPreferencesLazy()
 
@@ -69,7 +66,7 @@ abstract class ScanManga :
         }
     }
 
-    override val client = super.client.newBuilder().addNetworkInterceptor(stripEmptyXRequestedWith).build()
+    override fun OkHttpClient.Builder.configureClient(): OkHttpClient.Builder = addNetworkInterceptor(stripEmptyXRequestedWith)
 
     // Reader-page fetches reuse the app client (cache, gzip, DoH, cookie jar, etc.) but strip
     // the host's CloudflareInterceptor — that interceptor wastes ~30 s per call trying its own
@@ -78,40 +75,27 @@ abstract class ScanManga :
         client.newBuilder().apply { interceptors().removeAll { it.javaClass.simpleName == "CloudflareInterceptor" } }.build()
     }
 
-    override fun headersBuilder(): Headers.Builder = super.headersBuilder().add("upgrade-insecure-requests", "1").add(
-        "accept",
-        "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
-    ).add("sec-fetch-site", "none").add("accept-language", "fr-FR,fr;q=0.9,en-US;q=0.8,en;q=0.7").add("X-Requested-With", "")
+    // "Referer" and "Origin" are already set by KeiSource; only add what's left.
+    override fun Headers.Builder.configureHeaders(): Headers.Builder = this
+        .add("upgrade-insecure-requests", "1")
+        .add(
+            "accept",
+            "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+        )
+        .add("sec-fetch-site", "none")
+        .add("accept-language", "fr-FR,fr;q=0.9,en-US;q=0.8,en;q=0.7")
+        .add("X-Requested-With", "")
 
     // Popular
-    override fun popularMangaRequest(page: Int): Request = GET("$baseUrl/TOP-Manga-Webtoon-45.html", headers)
+    override suspend fun getPopularManga(page: Int): MangasPage {
+        val document = client.get("$baseUrl/TOP-Manga-Webtoon-45.html").asJsoup()
 
-    override fun popularMangaParse(response: Response): MangasPage {
-        val mangas = response.asJsoup().select("#carouselTOPContainer > div.top").mapNotNull { element ->
+        val mangas = document.select("#carouselTOPContainer > div.top").mapNotNull { element ->
             val titleElement = element.selectFirst("a.atop") ?: return@mapNotNull null
 
             SManga.create().apply {
                 title = titleElement.text()
                 setUrlWithoutDomain(titleElement.absUrl("href"))
-                thumbnail_url = element.extractThumbnail()
-            }
-        }
-
-        return MangasPage(mangas, false)
-    }
-
-    // Latest
-    override fun latestUpdatesRequest(page: Int): Request = GET(baseUrl, headers)
-
-    override fun latestUpdatesParse(response: Response): MangasPage {
-        val document = response.asJsoup()
-
-        val mangas = document.select("#content_news .publi").mapNotNull { element ->
-            val mangaElement = element.selectFirst("a.l_manga") ?: return@mapNotNull null
-
-            SManga.create().apply {
-                title = mangaElement.text()
-                setUrlWithoutDomain(mangaElement.absUrl("href"))
                 thumbnail_url = element.extractThumbnail()
             }
         }
@@ -133,30 +117,38 @@ abstract class ScanManga :
         return src.takeIf { it.isNotEmpty() && it != LAZY_PLACEHOLDER }
     }
 
+    // Latest
+    override suspend fun getLatestUpdates(page: Int): MangasPage {
+        val document = client.get(baseUrl).asJsoup()
+
+        val mangas = document.select("#content_news .publi").mapNotNull { element ->
+            val mangaElement = element.selectFirst("a.l_manga") ?: return@mapNotNull null
+
+            SManga.create().apply {
+                title = mangaElement.text()
+                setUrlWithoutDomain(mangaElement.absUrl("href"))
+                thumbnail_url = element.extractThumbnail()
+            }
+        }
+
+        return MangasPage(mangas, false)
+    }
+
     // Search
-    override fun searchMangaRequest(
-        page: Int,
-        query: String,
-        filters: FilterList,
-    ): Request {
+    override suspend fun getSearchMangaList(page: Int, query: String, filters: FilterList): MangasPage {
         val url = "https://bqj.$domain/search/quick.json"
             .toHttpUrl()
             .newBuilder()
             .addQueryParameter("term", query)
             .build()
 
-        return GET(
-            url,
-            headers.newBuilder()
-                .set("Origin", baseUrl)
-                .set("Referer", "$baseUrl/")
-                .set("Content-Type", "application/json; charset=UTF-8")
-                .build(),
-        )
-    }
+        val searchHeaders = headers.newBuilder()
+            .set("Origin", baseUrl)
+            .set("Referer", "$baseUrl/")
+            .set("Content-Type", "application/json; charset=UTF-8")
+            .build()
 
-    override fun searchMangaParse(response: Response): MangasPage {
-        val json = response.body.string().trim()
+        val json = client.get(url, searchHeaders).use { it.body.string().trim() }
 
         if (json.isEmpty() || json == "[]") {
             return MangasPage(emptyList(), false)
@@ -176,17 +168,67 @@ abstract class ScanManga :
         )
     }
 
-    // Details
-    override fun mangaDetailsParse(response: Response): SManga {
-        val document = response.asJsoup()
+    // URL search (e.g. pasting a manga link): resolve it into details on our own domain.
+    override suspend fun getMangaByUrl(url: HttpUrl): SManga? {
+        if (url.topPrivateDomain() != domain) return null
 
-        return SManga.create().apply {
-            title = document.select("h1.main_title[itemprop=name]").text()
-            author = document.select("div[itemprop=author]").text()
+        val manga = SManga.create().apply {
+            setUrlWithoutDomain(url.toString())
+        }
+
+        // fetchMangaUpdate() only fills in title/author/description/genre/status/thumbnail_url
+        // on the SManga it returns - it deliberately leaves `url` untouched, because its usual
+        // caller already knows the url of the entity it's updating and merges the returned
+        // fields onto that existing entity. Here we're returning a brand-new standalone SManga
+        // (not merging onto anything), so `url` - a lateinit var - would stay uninitialized and
+        // throw UninitializedPropertyAccessException the moment anything reads manga.url.
+        // Re-set it explicitly before returning.
+        return fetchMangaUpdate(manga, emptyList(), fetchDetails = true, fetchChapters = false).manga.apply {
+            setUrlWithoutDomain(url.toString())
+        }
+    }
+
+    // Details & Chapters
+    // Both come from the same manga page, so fetch it once regardless of the flags.
+    override suspend fun fetchMangaUpdate(
+        manga: SManga,
+        chapters: List<SChapter>,
+        fetchDetails: Boolean,
+        fetchChapters: Boolean,
+    ): SMangaUpdate {
+        val document = client.get("$baseUrl${manga.url}").asJsoup()
+
+        val updatedManga = SManga.create().apply {
+            // itemprop can hold multiple space-separated values (e.g. "name headline"), so an
+            // exact-match [itemprop=name] silently matches nothing on those pages. The other
+            // h1.main_title on this page (the "Lecture en ligne - ..." one) never carries an
+            // itemprop attribute at all, so presence alone is enough to disambiguate.
+            title = document.selectFirst("h1.main_title[itemprop]")?.text()
+                ?: error("Failed to find manga title.")
+
+            // The itemprop=author div's own text is just the "Auteur/Artiste" label - the
+            // actual names sit as a text node on its *parent*, alongside it.
+            author = document.selectFirst("div[itemprop=author]")?.parent()?.ownText()?.trim()
+
             description = document.selectFirst("div.titres_desc[itemprop=description]")?.text()
-            genre = document.selectFirst("div.titres_souspart span[itemprop=genre]")?.text()
 
-            val statutText = document.selectFirst("div.titres_souspart")?.ownText()?.lowercase()
+            // Same label-vs-value split as author: the span only holds the demographic
+            // ("Shonen"), the actual genre tag list is the parent's own text alongside it.
+            val genreContainer = document.selectFirst("div.titres_souspart:has(span[itemprop=genre])")
+            genre = genreContainer?.let { el ->
+                val demographic = el.selectFirst("span[itemprop=genre]")?.text()?.trim()
+                val tags = el.ownText().trim()
+                listOfNotNull(demographic?.takeIf { it.isNotEmpty() }, tags.takeIf { it.isNotEmpty() })
+                    .joinToString(", ")
+            }?.takeIf { it.isNotEmpty() }
+
+            // There are several div.titres_souspart blocks (author, genre, year, status,
+            // team...) - selectFirst("div.titres_souspart") grabbed whichever came first
+            // (the author one), never the status one, so this always resolved to UNKNOWN.
+            // Target the block whose own label div actually says "Statut".
+            val statutText = document.select("div.titres_souspart")
+                .firstOrNull { it.selectFirst("> div")?.text()?.trim()?.startsWith("Statut", ignoreCase = true) == true }
+                ?.ownText()?.lowercase()
             status = when {
                 statutText?.contains("en cours") == true -> SManga.ONGOING
                 statutText?.contains("terminé") == true -> SManga.COMPLETED
@@ -195,12 +237,12 @@ abstract class ScanManga :
 
             thumbnail_url = document.select("div.full_img_serie img[itemprop=image]").attr("abs:src")
         }
-    }
 
-    // Chapters
-    override fun chapterListParse(response: Response): List<SChapter> {
-        val document = response.asJsoup()
-        return document.select("div.chapt_m").mapNotNull { element ->
+        // "Team" block (itemprop=translator) holds the scanlation team as a link next to it -
+        // surfaced as `scanlator` on every chapter below, matching Tachiyomi's convention.
+        val scanlatorTeam = document.selectFirst("div[itemprop=translator]")?.parent()?.selectFirst("a")?.text()
+
+        val newChapters = document.select("div.chapt_m").mapNotNull { element ->
             val linkEl = element.selectFirst("td.publimg span.i a") ?: return@mapNotNull null
             val titleEl = element.selectFirst("td.publititle, td.publititle_ext")
 
@@ -217,6 +259,7 @@ abstract class ScanManga :
                     append(chapterName)
                     if (!extraTitle.isNullOrEmpty()) append(" - $extraTitle")
                 }
+                scanlator = scanlatorTeam
                 if (isLicensed) {
                     // Keep the absolute URL as-is: setUrlWithoutDomain() would strip the
                     // (foreign) host and silently turn it into a path on our own domain.
@@ -226,9 +269,203 @@ abstract class ScanManga :
                 }
             }
         }
+
+        return SMangaUpdate(
+            manga = updatedManga,
+            chapters = newChapters,
+        )
     }
 
+    // Licensed chapters have their absolute (foreign) URL stored directly in chapter.url,
+    // instead of a relative path - see fetchMangaUpdate.
+    private fun SChapter.isLicensed() = url.startsWith("http")
+
+    override fun getChapterUrl(chapter: SChapter): String = if (chapter.isLicensed()) chapter.url else super.getChapterUrl(chapter)
+
     // Pages
+    override suspend fun getPageList(chapter: SChapter): List<Page> {
+        if (chapter.isLicensed()) {
+            throw Exception("Ce chapitre est licencié.")
+        }
+
+        val context = applicationContext
+        val chapterUrl = "$baseUrl${chapter.url}"
+        val isReader = Exception().stackTrace.any { it.className.contains("reader") }
+
+        suspend fun fetch(): String? = try {
+            readerClient.get(chapterUrl, headers, ensureSuccess = false).use { resp ->
+                resp.body.string().takeIf { CHAPTER_INFO_REGEX.containsMatchIn(it) }
+            }
+        } catch (_: Exception) {
+            null
+        }
+
+        var body = fetch()
+        if (body == null) {
+            // Cold-session path: CF refuses to issue cf_clearance to a session that's
+            // never touched the host. Warm up by loading the homepage in a hidden WV,
+            // then re-probe — usually clears it without ever needing WebViewActivity.
+            warmupWebViewSession()
+            body = fetch()
+        }
+        if (body == null) {
+            try {
+                val intent = Intent().apply {
+                    component = ComponentName(context, "eu.kanade.tachiyomi.ui.webview.WebViewActivity")
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    putExtra("url_key", chapterUrl)
+                    putExtra("source_key", id)
+                    putExtra("title_key", "Résolvez le challenge Cloudflare, fermez la WebView et réouvrez le chapitre.")
+                }
+                context.startActivity(intent)
+            } catch (_: Exception) {
+                throw Exception("Résolvez le challenge Cloudflare depuis la WebView puis réouvrez le chapitre.")
+            }
+
+            for (attempt in 1..CF_MAX_POLLS) {
+                delay(CF_POLL_INTERVAL_MS)
+                body = fetch()
+                if (body != null) {
+                    val closeIntent = Intent().apply {
+                        val target = if (isReader) {
+                            "eu.kanade.tachiyomi.ui.reader.ReaderActivity"
+                        } else {
+                            "eu.kanade.tachiyomi.ui.main.MainActivity"
+                        }
+                        component = ComponentName(context, target)
+                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+                    }
+                    context.startActivity(closeIntent)
+                    break
+                }
+            }
+            if (body == null) {
+                // WV flow exhausted itself; the warmup we did wasn't enough either.
+                // Clear the gate so the next attempt warms again from scratch.
+                sessionWarmedUp.set(false)
+                throw Exception("Résolvez le challenge Cloudflare, fermez la WebView et réouvrez le chapitre.")
+            }
+        }
+
+        return parsePageList(Jsoup.parse(body, chapterUrl))
+    }
+
+    private val sessionWarmedUp = AtomicBoolean(false)
+
+    @SuppressLint("SetJavaScriptEnabled")
+    private fun warmupWebViewSession() {
+        if (!sessionWarmedUp.compareAndSet(false, true)) return
+
+        val latch = CountDownLatch(1)
+        val mainHandler = Handler(Looper.getMainLooper())
+
+        mainHandler.post {
+            val wv = WebView(applicationContext)
+            wv.settings.javaScriptEnabled = true
+            wv.settings.domStorageEnabled = true
+
+            val cm = android.webkit.CookieManager.getInstance()
+            cm.setAcceptCookie(true)
+            cm.setAcceptThirdPartyCookies(wv, true)
+
+            wv.webViewClient = object : WebViewClient() {
+                override fun onPageFinished(view: WebView?, url: String?) {
+                    // Schedule teardown on the main looper directly — view.postDelayed
+                    // is silently dropped because the WebView isn't attached to a window.
+                    // The settle window lets CF's Turnstile beacon commit cf_clearance.
+                    mainHandler.postDelayed(
+                        {
+                            runCatching {
+                                view?.stopLoading()
+                                view?.destroy()
+                            }
+                            latch.countDown()
+                        },
+                        WARMUP_SETTLE_MS,
+                    )
+                }
+            }
+            wv.loadUrl("$baseUrl/")
+        }
+
+        try {
+            if (!latch.await(WARMUP_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
+                sessionWarmedUp.set(false)
+            }
+        } catch (_: InterruptedException) {
+            sessionWarmedUp.set(false)
+        }
+    }
+
+    // NOTE: This deliberately deviates from the standard single-request page-list flow.
+    // The follow-up request to the "lel" data API needs parameters (sml/sme/chapterId/fingerprint)
+    // extracted from the initial chapter page response, so it can't be expressed as a single
+    // request - the second call is inherently dependent on the first one's parsed output.
+    private suspend fun parsePageList(document: Document): List<Page> {
+        val packedScript = document.selectFirst(PACKED_SCRIPT_SELECTOR)?.data()
+            ?: error("Failed to find packed reader script.")
+        val unpackedScript = decodeHunter(packedScript)
+
+        val (sml) = SML_PARAM_REGEX.find(unpackedScript)?.destructured ?: error("Failed to extract sml parameter.")
+
+        val (sme) = SME_PARAM_REGEX.find(unpackedScript)?.destructured ?: error("Failed to extract sme parameter.")
+
+        val (chapterId) = CHAPTER_INFO_REGEX.find(packedScript)?.destructured ?: error("Failed to extract chapter ID.")
+
+        val availableVariables = mapOf(
+            "sme" to sme,
+            "sml" to sml,
+            "fingerprint" to getFingerprint(),
+            "chapterId" to chapterId,
+            "topDomain" to (baseUrl.toHttpUrl().topPrivateDomain() ?: ""),
+        )
+
+        val mediaType = "application/json; charset=UTF-8".toMediaType()
+        val documentUrl = document.baseUri().toHttpUrl()
+
+        val requestBody = injectVariables(REQUEST_BODY, availableVariables)
+        val pageListUrl = injectVariables(PAGE_LIST_URL, availableVariables)
+        val requestHeaders = buildLelHeaders(documentUrl)
+
+        val noCookieClient = client.newBuilder().cookieJar(CookieJar.NO_COOKIES).build()
+
+        val lelResponse = noCookieClient.post(pageListUrl, requestHeaders, requestBody.toRequestBody(mediaType)).use { response ->
+            dataAPI(response.body.string(), chapterId.toInt())
+        }
+
+        return lelResponse.generateImageUrls().map { Page(it.first, imageUrl = it.second) }
+    }
+
+    // The real site's lel.js issues this as a same-site fetch() call, not a page navigation -
+    // it needs Client Hints (sec-ch-ua*) and cors-style sec-fetch-* values that OkHttp never
+    // sends on its own, and none of the navigation-only headers from headersBuilder() (those
+    // caused the 404s: a real fetch() never sends upgrade-insecure-requests, and Accept there
+    // is */*, not the text/html navigation list). Built from scratch rather than
+    // headers.newBuilder() so none of that leaks in.
+    private fun buildLelHeaders(documentUrl: HttpUrl): Headers {
+        val userAgent = headers["User-Agent"].orEmpty()
+        val chromeMajor = CHROME_MAJOR_VERSION_REGEX.find(userAgent)?.groupValues?.get(1) ?: "150"
+        val siteOrigin = "${documentUrl.scheme}://${documentUrl.host}"
+
+        return Headers.Builder()
+            .add("User-Agent", userAgent)
+            .add("Accept", "*/*")
+            .add("Accept-Language", "fr-FR,fr;q=0.9,en;q=0.8")
+            .add("sec-ch-ua", "\"Not;A=Brand\";v=\"8\", \"Chromium\";v=\"$chromeMajor\", \"Google Chrome\";v=\"$chromeMajor\"")
+            .add("sec-ch-ua-mobile", "?1")
+            .add("sec-ch-ua-platform", "\"Android\"")
+            .add("sec-fetch-site", "same-site")
+            .add("sec-fetch-mode", "cors")
+            .add("sec-fetch-dest", "empty")
+            .add("Origin", siteOrigin)
+            .add("Referer", "$siteOrigin/")
+            .add("Token", LEL_TOKEN)
+            .add("source", documentUrl.toString())
+            .add("Content-Type", "application/json; charset=UTF-8")
+            .add("priority", "u=1, i")
+            .build()
+    }
+
     private fun decodeHunter(obfuscatedJs: String): String {
         val (encoded, mask, intervalStr, optionStr) = HUNTER_OBFUSCATION_REGEX.find(obfuscatedJs)?.destructured
             ?: error("Failed to match obfuscation pattern")
@@ -285,213 +522,6 @@ abstract class ScanManga :
         val finalJsonStr = String(Base64.decode(reversed, Base64.DEFAULT))
 
         return finalJsonStr.parseAs<UrlPayload>()
-    }
-
-    // Licensed chapters have their absolute (foreign) URL stored directly in chapter.url,
-    // instead of a relative path - see chapterListParse.
-    private fun SChapter.isLicensed() = url.startsWith("http")
-
-    override fun getChapterUrl(chapter: SChapter): String = if (chapter.isLicensed()) chapter.url else super.getChapterUrl(chapter)
-
-    override fun fetchPageList(chapter: SChapter): Observable<List<Page>> {
-        if (chapter.isLicensed()) {
-            return Observable.error(Exception("Ce chapitre est licencié."))
-        }
-
-        val context = applicationContext
-        val chapterUrl = "$baseUrl${chapter.url}"
-        val isReader = Exception().stackTrace.any { it.className.contains("reader") }
-
-        fun fetch(): String? = try {
-            readerClient.newCall(GET(chapterUrl, headers)).execute().use { resp ->
-                resp.body.string().takeIf { CHAPTER_INFO_REGEX.containsMatchIn(it) }
-            }
-        } catch (_: Exception) {
-            null
-        }
-
-        var body = fetch()
-        if (body == null) {
-            // Cold-session path: CF refuses to issue cf_clearance to a session that's
-            // never touched the host. Warm up by loading the homepage in a hidden WV,
-            // then re-probe — usually clears it without ever needing WebViewActivity.
-            warmupWebViewSession()
-            body = fetch()
-        }
-        if (body == null) {
-            try {
-                val intent = Intent().apply {
-                    component = ComponentName(context, "eu.kanade.tachiyomi.ui.webview.WebViewActivity")
-                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                    putExtra("url_key", chapterUrl)
-                    putExtra("source_key", id)
-                    putExtra("title_key", "Résolvez le challenge Cloudflare, fermez la WebView et réouvrez le chapitre.")
-                }
-                context.startActivity(intent)
-            } catch (_: Exception) {
-                throw Exception("Résolvez le challenge Cloudflare depuis la WebView puis réouvrez le chapitre.")
-            }
-
-            for (attempt in 1..CF_MAX_POLLS) {
-                Thread.sleep(CF_POLL_INTERVAL_MS)
-                body = fetch()
-                if (body != null) {
-                    val closeIntent = Intent().apply {
-                        val target = if (isReader) {
-                            "eu.kanade.tachiyomi.ui.reader.ReaderActivity"
-                        } else {
-                            "eu.kanade.tachiyomi.ui.main.MainActivity"
-                        }
-                        component = ComponentName(context, target)
-                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
-                    }
-                    context.startActivity(closeIntent)
-                    break
-                }
-            }
-            if (body == null) {
-                // WV flow exhausted itself; the warmup we did wasn't enough either.
-                // Clear the gate so the next attempt warms again from scratch.
-                sessionWarmedUp.set(false)
-                throw Exception("Résolvez le challenge Cloudflare, fermez la WebView et réouvrez le chapitre.")
-            }
-        }
-
-        return Observable.just(parsePageList(Jsoup.parse(body, chapterUrl)))
-    }
-
-    private val sessionWarmedUp = AtomicBoolean(false)
-
-    @SuppressLint("SetJavaScriptEnabled")
-    private fun warmupWebViewSession() {
-        if (!sessionWarmedUp.compareAndSet(false, true)) return
-
-        val latch = CountDownLatch(1)
-        val mainHandler = Handler(Looper.getMainLooper())
-
-        mainHandler.post {
-            val wv = WebView(applicationContext)
-            wv.settings.javaScriptEnabled = true
-            wv.settings.domStorageEnabled = true
-
-            val cm = android.webkit.CookieManager.getInstance()
-            cm.setAcceptCookie(true)
-            cm.setAcceptThirdPartyCookies(wv, true)
-
-            wv.webViewClient = object : WebViewClient() {
-                override fun onPageFinished(view: WebView?, url: String?) {
-                    // Schedule teardown on the main looper directly — view.postDelayed
-                    // is silently dropped because the WebView isn't attached to a window.
-                    // The settle window lets CF's Turnstile beacon commit cf_clearance.
-                    mainHandler.postDelayed(
-                        {
-                            runCatching {
-                                view?.stopLoading()
-                                view?.destroy()
-                            }
-                            latch.countDown()
-                        },
-                        WARMUP_SETTLE_MS,
-                    )
-                }
-            }
-            wv.loadUrl("$baseUrl/")
-        }
-
-        try {
-            if (!latch.await(WARMUP_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
-                sessionWarmedUp.set(false)
-            }
-        } catch (_: InterruptedException) {
-            sessionWarmedUp.set(false)
-        }
-    }
-
-    override fun pageListParse(response: Response): List<Page> = parsePageList(response.asJsoup())
-
-    // NOTE: This deliberately deviates from the standard override-the-request-method flow.
-    // The follow-up request to the "lel" data API needs parameters (sml/sme/chapterId/fingerprint)
-    // extracted from the initial chapter page response, so it can't be expressed as a plain
-    // pageListRequest() — the second call is inherently dependent on the first one's parsed output.
-    private fun parsePageList(document: Document): List<Page> {
-        val packedScript = document.selectFirst(PACKED_SCRIPT_SELECTOR)?.data()
-            ?: error("Failed to find packed reader script.")
-        val unpackedScript = decodeHunter(packedScript)
-
-        val (sml) = SML_PARAM_REGEX.find(unpackedScript)?.destructured ?: error("Failed to extract sml parameter.")
-
-        val (sme) = SME_PARAM_REGEX.find(unpackedScript)?.destructured ?: error("Failed to extract sme parameter.")
-
-        val (chapterId) = CHAPTER_INFO_REGEX.find(packedScript)?.destructured ?: error("Failed to extract chapter ID.")
-
-        val availableVariables = mapOf(
-            "sme" to sme,
-            "sml" to sml,
-            "fingerprint" to getFingerprint(),
-            "chapterId" to chapterId,
-            "topDomain" to (baseUrl.toHttpUrl().topPrivateDomain() ?: ""),
-        )
-
-        val mediaType = "application/json; charset=UTF-8".toMediaType()
-        val documentUrl = document.baseUri().toHttpUrl()
-
-        val requestBody = injectVariables(REQUEST_BODY, availableVariables)
-        val pageListUrl = injectVariables(PAGE_LIST_URL, availableVariables)
-        val requestHeaders = buildLelHeaders(documentUrl)
-
-        val pageListRequest = POST(
-            url = pageListUrl,
-            headers = requestHeaders,
-            body = requestBody.toRequestBody(mediaType),
-        )
-
-        val lelResponse = client.newBuilder().cookieJar(CookieJar.NO_COOKIES).build().newCall(pageListRequest).execute().use { response ->
-            if (!response.isSuccessful) {
-                error("Unexpected error while fetching lel. HTTP ${response.code}")
-            }
-            dataAPI(response.body.string(), chapterId.toInt())
-        }
-
-        return lelResponse.generateImageUrls().map { Page(it.first, imageUrl = it.second) }
-    }
-
-    // The real site's lel.js issues this as a same-site fetch() call, not a page navigation -
-    // it needs Client Hints (sec-ch-ua*) and cors-style sec-fetch-* values that OkHttp never
-    // sends on its own, and none of the navigation-only headers from headersBuilder() (those
-    // caused the 404s: a real fetch() never sends upgrade-insecure-requests, and Accept there
-    // is */*, not the text/html navigation list). Built from scratch rather than
-    // headers.newBuilder() so none of that leaks in.
-    private fun buildLelHeaders(documentUrl: HttpUrl): Headers {
-        val userAgent = headers["User-Agent"].orEmpty()
-        val chromeMajor = CHROME_MAJOR_VERSION_REGEX.find(userAgent)?.groupValues?.get(1) ?: "150"
-        val siteOrigin = "${documentUrl.scheme}://${documentUrl.host}"
-
-        return Headers.Builder()
-            .add("User-Agent", userAgent)
-            .add("Accept", "*/*")
-            .add("Accept-Language", "fr-FR,fr;q=0.9,en;q=0.8")
-            .add("sec-ch-ua", "\"Not;A=Brand\";v=\"8\", \"Chromium\";v=\"$chromeMajor\", \"Google Chrome\";v=\"$chromeMajor\"")
-            .add("sec-ch-ua-mobile", "?1")
-            .add("sec-ch-ua-platform", "\"Android\"")
-            .add("sec-fetch-site", "same-site")
-            .add("sec-fetch-mode", "cors")
-            .add("sec-fetch-dest", "empty")
-            .add("Origin", siteOrigin)
-            .add("Referer", "$siteOrigin/")
-            .add("Token", LEL_TOKEN)
-            .add("source", documentUrl.toString())
-            .add("Content-Type", "application/json; charset=UTF-8")
-            .add("priority", "u=1, i")
-            .build()
-    }
-
-    // Page
-    override fun imageUrlParse(response: Response): String = throw UnsupportedOperationException()
-
-    override fun imageRequest(page: Page): Request {
-        val imgHeaders = headers.newBuilder().add("Origin", baseUrl).build()
-
-        return GET(page.imageUrl!!, imgHeaders)
     }
 
     @SuppressLint("SetJavaScriptEnabled")

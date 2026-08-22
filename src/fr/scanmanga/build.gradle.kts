@@ -6,9 +6,9 @@ plugins {
 
 keiyoushi {
     name = "Scan-Manga"
-    versionCode = 27
+    versionCode = 28
     contentWarning = ContentWarning.MIXED
-    libVersion = "1.4"
+    libVersion = "1.6"
 
     source {
         baseUrl = "https://m.scan-manga.com"
