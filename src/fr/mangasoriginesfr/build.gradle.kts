@@ -6,7 +6,7 @@ plugins {
 
 keiyoushi {
     name = "Mangas-Origines.fr"
-    versionCode = 57
+    versionCode = 58
     contentWarning = ContentWarning.SAFE
     libVersion = "1.6"
     theme = "origines"
