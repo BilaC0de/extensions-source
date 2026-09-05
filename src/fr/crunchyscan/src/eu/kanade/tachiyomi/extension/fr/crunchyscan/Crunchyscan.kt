@@ -4,61 +4,49 @@ import android.content.ComponentName
 import android.content.Intent
 import android.util.Base64
 import eu.kanade.tachiyomi.network.GET
-import eu.kanade.tachiyomi.network.POST
 import eu.kanade.tachiyomi.source.model.Filter
 import eu.kanade.tachiyomi.source.model.FilterList
 import eu.kanade.tachiyomi.source.model.MangasPage
 import eu.kanade.tachiyomi.source.model.Page
 import eu.kanade.tachiyomi.source.model.SChapter
 import eu.kanade.tachiyomi.source.model.SManga
-import eu.kanade.tachiyomi.source.online.HttpSource
-import eu.kanade.tachiyomi.util.asJsoup
+import eu.kanade.tachiyomi.source.model.SMangaUpdate
 import keiyoushi.annotation.Source
+import keiyoushi.network.get
+import keiyoushi.network.post
+import keiyoushi.source.KeiSource
 import keiyoushi.utils.applicationContext
+import keiyoushi.utils.asJsoup
 import keiyoushi.utils.parseAs
+import kotlinx.serialization.json.JsonElement
 import okhttp3.CacheControl
 import okhttp3.FormBody
 import okhttp3.Headers
 import okhttp3.Request
 import okhttp3.Response
+import org.jsoup.nodes.Document
 import java.nio.charset.StandardCharsets
 import javax.crypto.Cipher
 import javax.crypto.spec.IvParameterSpec
 import javax.crypto.spec.SecretKeySpec
 
 @Source
-abstract class Crunchyscan : HttpSource() {
+abstract class Crunchyscan : KeiSource() {
 
     // name, lang, baseUrl, id injectés automatiquement par KSP via le bloc source {}
 
-    override val supportsLatest = true
-
-    override val client = network.client
-
     private var csrfToken: String = ""
 
-    private fun fetchCsrfToken(): String {
+    private suspend fun fetchCsrfToken(): String {
         if (csrfToken.isNotEmpty()) return csrfToken
-        val document = client.newCall(GET(baseUrl, headers)).execute().asJsoup()
+        val document = client.get(baseUrl, headers).asJsoup()
         csrfToken = document.selectFirst("meta[name=csrf-token]")?.attr("content") ?: ""
         return csrfToken
     }
 
-    private fun headersWithCsrf(): Headers = headers.newBuilder().add("X-CSRF-TOKEN", fetchCsrfToken()).add("X-Requested-With", "XMLHttpRequest").build()
+    private suspend fun headersWithCsrf(): Headers = headers.newBuilder().add("X-CSRF-TOKEN", fetchCsrfToken()).add("X-Requested-With", "XMLHttpRequest").build()
 
-    // ============================================
-    // POPULAR MANGA
-    // ============================================
-
-    override fun popularMangaRequest(page: Int): Request {
-        val formBody =
-            FormBody.Builder().add("affichage", "grid").add("team", "").add("artist", "").add("author", "").add("page", page.toString())
-                .add("chapters[]", "0").add("chapters[]", "200").add("searchTerm", "").add("orderWith", "Vues").add("orderBy", "desc")
-                .build()
-        return POST("$baseUrl/api/manga/search/advance", headersWithCsrf(), formBody)
-    }
-
-    override fun popularMangaParse(response: Response): MangasPage {
+    private fun parseMangasPage(response: Response): MangasPage {
         val apiResponse = response.parseAs<ApiResponse>()
         val mangaList = apiResponse.data.map { it.toSManga() }
         val hasNextPage = apiResponse.meta.currentPage < apiResponse.meta.lastPage
@@ -66,24 +54,36 @@ abstract class Crunchyscan : HttpSource() {
     }
 
     // ============================================
+    // POPULAR MANGA
+    // ============================================
+
+    override suspend fun getPopularManga(page: Int): MangasPage {
+        val formBody =
+            FormBody.Builder().add("affichage", "grid").add("team", "").add("artist", "").add("author", "").add("page", page.toString())
+                .add("chapters[]", "0").add("chapters[]", "200").add("searchTerm", "").add("orderWith", "Vues").add("orderBy", "desc")
+                .build()
+        val response = client.post("$baseUrl/api/manga/search/advance", headersWithCsrf(), formBody)
+        return parseMangasPage(response)
+    }
+
+    // ============================================
     // LATEST UPDATES
     // ============================================
 
-    override fun latestUpdatesRequest(page: Int): Request {
+    override suspend fun getLatestUpdates(page: Int): MangasPage {
         val formBody =
             FormBody.Builder().add("affichage", "grid").add("team", "").add("artist", "").add("author", "").add("page", page.toString())
                 .add("chapters[]", "0").add("chapters[]", "200").add("searchTerm", "").add("orderWith", "Récent").add("orderBy", "desc")
                 .build()
-        return POST("$baseUrl/api/manga/search/advance", headersWithCsrf(), formBody)
+        val response = client.post("$baseUrl/api/manga/search/advance", headersWithCsrf(), formBody)
+        return parseMangasPage(response)
     }
-
-    override fun latestUpdatesParse(response: Response): MangasPage = popularMangaParse(response)
 
     // ============================================
     // SEARCH
     // ============================================
 
-    override fun getFilterList() = FilterList(
+    override fun getFilterList(data: JsonElement?) = FilterList(
         GenreFilter(),
         YearFilter(),
         StatusFilter(),
@@ -92,7 +92,7 @@ abstract class Crunchyscan : HttpSource() {
         ChapterMaxFilter(),
     )
 
-    override fun searchMangaRequest(page: Int, query: String, filters: FilterList): Request {
+    override suspend fun getSearchMangaList(page: Int, query: String, filters: FilterList): MangasPage {
         val formBody =
             FormBody.Builder().add("affichage", "grid").add("team", "").add("artist", "").add("author", "").add("page", page.toString())
                 .add("searchTerm", query).add("orderWith", "Vues").add("orderBy", "desc")
@@ -121,41 +121,46 @@ abstract class Crunchyscan : HttpSource() {
 
         formBody.add("chapters[]", chaptersMin).add("chapters[]", chaptersMax)
 
-        return POST("$baseUrl/api/manga/search/advance", headersWithCsrf(), formBody.build())
+        val response = client.post("$baseUrl/api/manga/search/advance", headersWithCsrf(), formBody.build())
+        return parseMangasPage(response)
     }
 
-    override fun searchMangaParse(response: Response): MangasPage = popularMangaParse(response)
-
     // ============================================
-    // MANGA DETAILS
+    // MANGA DETAILS + CHAPTER LIST
     // ============================================
 
-    override fun mangaDetailsParse(response: Response): SManga {
-        val document = response.asJsoup()
-        return SManga.create().apply {
-            title = document.selectFirst("h2.text-3xl, h1.text-2xl")!!.text()
-            description = document.selectFirst("div.mt-12 > p")?.text() ?: document.selectFirst("p.whitespace-pre-line")?.text()
-            thumbnail_url = document.selectFirst("img.manga_cover")?.attr("abs:src")
-            author = document.select("a[href*='/catalog/author/']").joinToString { it.text() }
-            genre = document.select("a[href*='/catalog/genre/']").joinToString { it.text() }
-            val statusText = document.select("h3:contains(Status)").first()?.nextElementSibling()?.text()?.lowercase()
-            status = when {
-                statusText?.contains("en cours") == true -> SManga.ONGOING
-                statusText?.contains("terminé") == true -> SManga.COMPLETED
-                statusText?.contains("pause") == true -> SManga.ON_HIATUS
-                statusText?.contains("abandonné") == true -> SManga.CANCELLED
-                else -> SManga.UNKNOWN
-            }
-            initialized = true
+    // Détails et chapitres viennent de la même page : une seule requête, peu importe les flags.
+    override suspend fun fetchMangaUpdate(
+        manga: SManga,
+        chapters: List<SChapter>,
+        fetchDetails: Boolean,
+        fetchChapters: Boolean,
+    ): SMangaUpdate {
+        val document = client.get(baseUrl + manga.url, headers).asJsoup()
+
+        return SMangaUpdate(
+            manga = parseMangaDetails(document, manga),
+            chapters = parseChapterList(document),
+        )
+    }
+
+    private fun parseMangaDetails(document: Document, manga: SManga): SManga = manga.apply {
+        title = document.selectFirst("h2.text-3xl, h1.text-2xl")!!.text()
+        description = document.selectFirst("div.mt-12 > p")?.text() ?: document.selectFirst("p.whitespace-pre-line")?.text()
+        thumbnail_url = document.selectFirst("img.manga_cover")?.attr("abs:src")
+        author = document.select("a[href*='/catalog/author/']").joinToString { it.text() }
+        genre = document.select("a[href*='/catalog/genre/']").joinToString { it.text() }
+        val statusText = document.select("h3:contains(Status)").first()?.nextElementSibling()?.text()?.lowercase()
+        status = when {
+            statusText?.contains("en cours") == true -> SManga.ONGOING
+            statusText?.contains("terminé") == true -> SManga.COMPLETED
+            statusText?.contains("pause") == true -> SManga.ON_HIATUS
+            statusText?.contains("abandonné") == true -> SManga.CANCELLED
+            else -> SManga.UNKNOWN
         }
     }
 
-    // ============================================
-    // CHAPTER LIST
-    // ============================================
-
-    override fun chapterListParse(response: Response): List<SChapter> {
-        val document = response.asJsoup()
+    private fun parseChapterList(document: Document): List<SChapter> {
         return document.select("div#ChapterWrap > div.chapterBox").mapNotNull { element ->
             val link = element.selectFirst("a.chapter-link[href*='/read/']") ?: return@mapNotNull null
             SChapter.create().apply {
@@ -182,13 +187,18 @@ abstract class Crunchyscan : HttpSource() {
         }
     }
 
-    override fun getChapterUrl(chapter: SChapter): String = baseUrl + chapter.url
-
     // ============================================
     // PAGE LIST
     // ============================================
 
-    override fun pageListParse(response: Response): List<Page> {
+    override suspend fun getPageList(chapter: SChapter): List<Page> {
+        // Capturé avant tout appel suspend de cette fonction (donc avant tout vrai saut de
+        // thread), pour que la pile d'appel reflète encore l'appel synchrone venant du
+        // Downloader de Mihon. Si cette vérification est faite après un `client.get(...)`,
+        // elle ne fonctionne plus de manière fiable pendant un téléchargement.
+        val isDownload = isDownloadContext()
+
+        val response = client.get(baseUrl + chapter.url, headers)
         val chapterUrl = response.request.url.toString().substringBefore("?")
         val document = response.asJsoup()
 
@@ -196,7 +206,7 @@ abstract class Crunchyscan : HttpSource() {
         val dataMeta = document.selectFirst("#a-ads-id")?.attr("data-meta") ?: ""
 
         if (hasTurnstile || dataMeta.isEmpty()) {
-            if (isDownloadContext()) {
+            if (isDownload) {
                 throw Exception("Protégé par Cloudflare, non téléchargeable")
             }
 
@@ -237,13 +247,9 @@ abstract class Crunchyscan : HttpSource() {
         false
     }
 
-    override fun imageUrlRequest(page: Page): Request {
-        val chapterUrl = page.url.substringBefore("?imgIndex")
-        val imgIndex = page.url.substringAfter("?imgIndex=")
-        return GET("$chapterUrl?imgIndex=$imgIndex", headers).newBuilder().cacheControl(CacheControl.FORCE_NETWORK).build()
-    }
-
-    override fun imageUrlParse(response: Response): String {
+    // getImageUrl fusionne l'ancien imageUrlRequest (avec son CacheControl.FORCE_NETWORK) + imageUrlParse
+    override suspend fun getImageUrl(page: Page): String {
+        val response = client.get(page.url, headers, cacheControl = CacheControl.FORCE_NETWORK)
         val targetIndex = response.request.url.queryParameter("imgIndex")?.toIntOrNull() ?: 0
         val document = response.asJsoup()
         val dataMeta = document.selectFirst("#a-ads-id")?.attr("data-meta") ?: return ""
@@ -253,6 +259,7 @@ abstract class Crunchyscan : HttpSource() {
         return if (url.contains("/get-image")) "$url&cid=$FINGERPRINT_DEFAULT" else url
     }
 
+    // Fonction non-suspend, toujours disponible telle quelle sur KeiSource
     override fun imageRequest(page: Page): Request {
         val imageUrl = page.imageUrl.orEmpty().replace("&amp;", "&")
 

@@ -19,7 +19,9 @@ class MangaItem(
     fun toSManga() = SManga.create().apply {
         title = name
         url = "/lecture-en-ligne/$slug"
-        thumbnail_url = coverUrl
+        // Le site renvoie parfois cover_url en http://, ce qui déclenche un challenge
+        // Cloudflare (403) car le domaine force le HTTPS - on force donc le schéma ici.
+        thumbnail_url = coverUrl?.replaceFirst("http://", "https://")
         initialized = false
     }
 }
